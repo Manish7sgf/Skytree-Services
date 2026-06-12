@@ -6,6 +6,9 @@ import CertificateServiceModule from './components/CertificateServiceModule'
 import ResumeServiceModule from './components/ResumeServiceModule'
 import PhotoStudioServiceModule from './components/PhotoStudioServiceModule'
 import { useFileOptimizer, type ProcessedFile } from './hooks/useFileOptimizer'
+import { ErrorBoundary } from './components/ErrorBoundary'
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
 
 const normalizePhoneInput = (value: string, maxDigits = 10) => value.replace(/\D/g, '').slice(0, maxDigits)
 const isValidTenDigitPhone = (value: string) => normalizePhoneInput(value).length === 10
@@ -1210,7 +1213,7 @@ function App() {
     // 1. Fetch Order ID from backend
     let order_id = '';
     try {
-      const resp = await fetch('http://localhost:5000/api/create-order', {
+      const resp = await fetch(`${API_BASE}/api/create-order`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ amount })
@@ -1227,7 +1230,7 @@ function App() {
     // Helper to record transaction and update user state
     const finalizePayment = async (simulatedOrderId: string) => {
       try {
-        const verifyResp = await fetch('http://localhost:5000/api/verify-payment', {
+        const verifyResp = await fetch(`${API_BASE}/api/verify-payment`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1296,7 +1299,7 @@ function App() {
       theme: { color: '#3b82f6' },
       handler: async function (response: any) {
         try {
-          const verifyResp = await fetch('http://localhost:5000/api/verify-payment', {
+          const verifyResp = await fetch(`${API_BASE}/api/verify-payment`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(response)
@@ -3111,14 +3114,18 @@ function App() {
                             ))}
                           </div>
                         ) : (
-                          <CertificateServiceModule
-                            moduleKey={activeServiceSubTab}
-                            onBack={() => setActiveServiceSubTab(null)}
-                          />
+                          <ErrorBoundary>
+                            <CertificateServiceModule
+                              moduleKey={activeServiceSubTab}
+                              onBack={() => setActiveServiceSubTab(null)}
+                            />
+                          </ErrorBoundary>
                         )}
                       </div>
                     ) : activeServiceSubTab === 'photo-studio' ? (
-                      <PhotoStudioServiceModule moduleKey={activeServiceSubTab} onBack={() => setActiveServiceSubTab(null)} />
+                      <ErrorBoundary>
+                        <PhotoStudioServiceModule moduleKey={activeServiceSubTab} onBack={() => setActiveServiceSubTab(null)} />
+                      </ErrorBoundary>
                     ) : activeServiceSubTab === 'tn-police' ? (
                       <div className="police-services-view">
                         <div className="tn-police-header">
@@ -5599,12 +5606,14 @@ function App() {
                         </div>
                       </div>
                     ) : ['resume-normal', 'resume-first-year', 'resume-fresher', 'resume-experienced', 'resume-labour', 'resume-word-to-pdf', 'resume-edit-pdf', 'resume-edit-word-pdf'].includes(String(activeServiceSubTab || '')) ? (
-                      <ResumeServiceModule
-                        key={activeServiceSubTab}
-                        moduleKey={String(activeServiceSubTab)}
-                        serviceFee={getSubmissionChargeAmount({ serviceName: `Resume - ${String(activeServiceSubTab || '').replace('resume-', '').replace(/-/g, ' ')}` })}
-                        onBack={() => setActiveServiceSubTab(null)}
-                      />
+                      <ErrorBoundary>
+                        <ResumeServiceModule
+                          key={activeServiceSubTab}
+                          moduleKey={String(activeServiceSubTab)}
+                          serviceFee={getSubmissionChargeAmount({ serviceName: `Resume - ${String(activeServiceSubTab || '').replace('resume-', '').replace(/-/g, ' ')}` })}
+                          onBack={() => setActiveServiceSubTab(null)}
+                        />
+                      </ErrorBoundary>
                     ) : activeServiceCategory === 'bank' && !activeServiceSubTab ? (
                       <div className="services-list">
                         <div className="service-list-item" onClick={() => { setActiveServiceSubTab('cibil-score'); setCibilResult(null); setCibilForm({ firstName: '', lastName: '', mobile: '', pan: '', dob: '', pincode: '', address: '' }); setCibilStep(0); }}>

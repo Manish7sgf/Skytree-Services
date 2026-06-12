@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "homepage": "https://Yaminah7.github.io/Skytree/",
+  "homepage": "https://Manish7sgf.github.io/Skytree-Services/",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -18,6 +18,7 @@
     "jspdf": "^4.2.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-easy-crop": "^5.5.7",
     "react-image-crop": "^11.0.10"
   },
   "devDependencies": {
@@ -29,10 +30,10 @@
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
+    "gh-pages": "^6.1.1",
     "globals": "^16.5.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",
-    "vite": "^7.3.1",
-    "gh-pages": "^6.1.1"
+    "vite": "^7.3.1"
   }
 }
