@@ -8,8 +8,12 @@ import PhotoStudioServiceModule from './components/PhotoStudioServiceModule'
 import { useFileOptimizer, type ProcessedFile } from './hooks/useFileOptimizer'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import {
-  seedUsersIfEmpty,
   subscribeToUsers,
+  saveUser,
+  updateUser,
+  deleteUser as deleteUserFirestore,
+  saveAllUsers,
+  forceReseedUsers,
 } from './userService'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
@@ -73,6 +77,35 @@ const createDefaultApprovalConfig = () => ({
   usernameMode: 'tree' as 'tree' | 'phone' | 'email',
   serviceAccess: createDefaultServiceAccess()
 })
+
+interface User {
+  id: number | string;
+  name?: string;
+  email?: string;
+  phone?: string;
+  district?: string;
+  role?: string;
+  accountRole?: string;
+  serviceAccess?: Record<string, boolean>;
+  allocatedCredit?: number;
+  status?: string;
+  username?: string;
+  shopName?: string;
+  walletBalance?: number;
+  transactions?: Array<{
+    id: number | string;
+    type: string;
+    amount: number;
+    date: string;
+    status: string;
+    description?: string;
+  }>;
+  fatherSpouseName?: string;
+  address?: string;
+  pincode?: string;
+  state?: string;
+  password?: string;
+}
 
 function App() {
   const [mousePos, setMousePos] = useState({ x: 50, y: 50 })
@@ -292,28 +325,21 @@ function App() {
   }, [activeTab, filteredServiceReports, expandedServiceReportId])
 
   // Persistent States
-  const [users, setUsers] = useState<any[]>(() => {
-    const saved = localStorage.getItem('portal_users')
-    if (saved) return JSON.parse(saved)
-    return [
-      { id: 1, name: 'Admin User', email: 'admin@portal.com', phone: '0000000000', district: 'Tamilnadu', role: 'admin', accountRole: 'admin', serviceAccess: createDefaultServiceAccess(), allocatedCredit: 0, status: 'Approved', username: 'Admin', shopName: 'Admin Hub', walletBalance: 0, transactions: [] },
-      {
-        id: 2, name: 'Sample Retailer', email: 'sample@retail.com', phone: '9876543210', district: 'Chennai', role: 'user', accountRole: 'user', serviceAccess: createDefaultServiceAccess(), allocatedCredit: 0, status: 'Approved', shopName: 'Sample Shop', fatherSpouseName: 'John Doe', address: '123 Main St, Anna Nagar', pincode: '600040', state: 'Tamilnadu', username: 'Sample', password: 'Welcome@123', walletBalance: 500.00, transactions: [
-          { id: 1, type: 'Credit', amount: 500.00, date: '2026-03-20', status: 'Success', description: 'Opening Balance' }
-        ]
-      }
-    ]
-  })
+  const [users, setUsers] = useState<User[]>([]);
+  const [usersLoading, setUsersLoading] = useState(true);
 
   // Sync with Firestore
   useEffect(() => {
-    seedUsersIfEmpty().then(() => {
+    forceReseedUsers().then(() => {
       const unsubscribe = subscribeToUsers((firestoreUsers) => {
         if (firestoreUsers.length > 0) {
           setUsers(firestoreUsers as any);
+          setUsersLoading(false);
         }
       });
       return unsubscribe;
+    }).catch(() => {
+      setUsersLoading(false);
     });
   }, [])
 
@@ -607,6 +633,7 @@ function App() {
       }
 
       const updatedUsers = prev.map(u => userMap.get(u.id) || u)
+      saveAllUsers(updatedUsers).catch(console.error);
       syncCurrentUserFromUsers(updatedUsers)
       return updatedUsers
     })
@@ -662,6 +689,7 @@ function App() {
           [serviceKey]: isEnabled
         }
       }))
+      saveAllUsers(updated).catch(console.error);
       syncCurrentUserFromUsers(updated)
       return updated
     })
@@ -681,13 +709,14 @@ function App() {
           }
         }
       })
+      saveAllUsers(updated).catch(console.error);
       syncCurrentUserFromUsers(updated)
       return updated
     })
     alert(`Service access ${isEnabled ? 'enabled' : 'disabled'} for role: ${targetRole}.`)
   }
 
-  const applyServiceAccessByUserId = (serviceKey: string, targetUserId: string, isEnabled: boolean) => {
+  const applyServiceAccessByUserId = async (serviceKey: string, targetUserId: string, isEnabled: boolean) => {
     const parsedId = Number(targetUserId)
     if (!Number.isInteger(parsedId) || parsedId <= 0) {
       alert('Enter a valid User ID.')
@@ -695,21 +724,30 @@ function App() {
     }
 
     let userFound = false
+    let updatedServiceAccessForUser = null
     setUsers(prev => {
       const updated = prev.map(u => {
         if (u.id !== parsedId) return u
         userFound = true
+        const newServiceAccess = { ...mergeServiceAccess(u.serviceAccess), [serviceKey]: isEnabled }
+        updatedServiceAccessForUser = newServiceAccess
         return {
           ...u,
-          serviceAccess: {
-            ...mergeServiceAccess(u.serviceAccess),
-            [serviceKey]: isEnabled
-          }
+          serviceAccess: newServiceAccess
         }
       })
       syncCurrentUserFromUsers(updated)
       return updated
     })
+
+    if (updatedServiceAccessForUser !== null) {
+      try {
+        await updateUser(parsedId, { serviceAccess: updatedServiceAccessForUser })
+        console.log('User service access saved to Firestore:', parsedId)
+      } catch (err) {
+        console.error('Firestore service access save error:', err)
+      }
+    }
 
     if (!userFound) {
       alert(`No user found with ID ${parsedId}.`)
@@ -1008,6 +1046,11 @@ function App() {
       status: 'Pending'
     }
     setUsers([...users, newUser])
+    saveUser(newUser).then(() => {
+      console.log('New user saved to Firestore:', newUser.id);
+    }).catch(err => {
+      console.error('Firestore save error:', err);
+    })
     alert('Signup Successful! Your account has been created.')
     setSignupData({
       name: '',
@@ -1024,13 +1067,19 @@ function App() {
   }
 
   const filteredUsers = users.filter(u =>
-    u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.email.toLowerCase().includes(searchTerm.toLowerCase())
+    (u.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (u.email || '').toLowerCase().includes(searchTerm.toLowerCase())
   )
 
-  const deleteUser = (id: number) => {
+  const deleteUser = async (id: number) => {
     if (confirm('Are you sure you want to delete this user?')) {
       setUsers(users.filter(u => u.id !== id))
+      try {
+        await deleteUserFirestore(id);
+        console.log('User deleted from Firestore:', id);
+      } catch (err) {
+        console.error('Firestore delete error:', err);
+      }
     }
   }
 
@@ -1048,9 +1097,9 @@ function App() {
       finalUsername = `Tree${String(treeCounter).padStart(5, '0')}`
       setTreeCounter(prev => prev + 1)
     } else if (approvalConfig.usernameMode === 'phone') {
-      finalUsername = user.phone
+      finalUsername = user.phone || ''
     } else {
-      finalUsername = user.email
+      finalUsername = user.email || ''
     }
 
     // Update User
@@ -1069,6 +1118,21 @@ function App() {
         : u
     ))
 
+    try {
+      await updateUser(userId, {
+        status: 'Approved',
+        username: finalUsername,
+        password: 'Welcome@123',
+        role: approvalConfig.accountRole,
+        accountRole: approvalConfig.accountRole,
+        serviceAccess: approvalConfig.serviceAccess,
+        allocatedCredit: user.allocatedCredit || 0
+      });
+      console.log('User saved to Firestore:', userId);
+    } catch (err) {
+      console.error('Firestore save error:', err);
+    }
+
     setSelectedUserForApproval(null)
 
     // --- Real Notification Logic ---
@@ -1086,12 +1150,12 @@ function App() {
           import.meta.env.VITE_EMAILJS_SERVICE_ID,
           import.meta.env.VITE_EMAILJS_TEMPLATE_ID,
           {
-            to_name: user.name,
-            to_email: user.email,
-            email: user.email,
+            to_name: user.name || '',
+            to_email: user.email || '',
+            email: user.email || '',
             username: finalUsername,
             password: 'Welcome@123',
-            shop_name: user.shopName
+            shop_name: user.shopName || ''
           },
           import.meta.env.VITE_EMAILJS_PUBLIC_KEY
         )
@@ -1105,7 +1169,7 @@ function App() {
       setNotificationSteps(prev => [...prev, 'Sending SMS to mobile number...'])
       try {
         if (import.meta.env.VITE_TWILIO_ACCOUNT_SID) {
-          const smsMsg = `Welcome ${user.name}! Your account for ${user.shopName} has been approved. Username: ${finalUsername}, Password: Welcome@123`
+          const smsMsg = `Welcome ${user.name || ''}! Your account for ${user.shopName || ''} has been approved. Username: ${finalUsername}, Password: Welcome@123`
           const twilioAuth = btoa(`${import.meta.env.VITE_TWILIO_ACCOUNT_SID}:${import.meta.env.VITE_TWILIO_AUTH_TOKEN}`)
 
           const smsRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${import.meta.env.VITE_TWILIO_ACCOUNT_SID}/Messages.json`, {
@@ -1115,8 +1179,8 @@ function App() {
               'Authorization': `Basic ${twilioAuth}`
             },
             body: new URLSearchParams({
-              To: user.phone,
-              From: import.meta.env.VITE_TWILIO_PHONE_NUMBER,
+              To: user.phone || '',
+              From: import.meta.env.VITE_TWILIO_PHONE_NUMBER || '',
               Body: smsMsg
             })
           })
@@ -1285,6 +1349,7 @@ function App() {
 
         setCurrentUser(updatedUser);
         setUsers(users.map(u => u.id === updatedUser.id ? updatedUser : u));
+        updateUser(updatedUser.id, updatedUser).catch(console.error);
         localStorage.setItem('portal_current_user', JSON.stringify(updatedUser));
         setPaymentStep(4);
       } catch (err: any) {
@@ -1350,6 +1415,7 @@ function App() {
 
           setCurrentUser(updatedUser);
           setUsers(users.map(u => u.id === updatedUser.id ? updatedUser : u));
+          updateUser(updatedUser.id, updatedUser).catch(console.error);
           localStorage.setItem('portal_current_user', JSON.stringify(updatedUser));
           setPaymentStep(4);
         } catch (err: any) {
@@ -1382,7 +1448,7 @@ function App() {
     localStorage.removeItem('portal_current_user')
   }
 
-  const handleUpdateProfile = (e: React.FormEvent) => {
+  const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!currentUser) return
 
@@ -1392,10 +1458,11 @@ function App() {
     }
 
     // Update main users list
-    setUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, ...editData } : u))
+    const updatedUser = { ...currentUser, ...editData }
+    setUsers(prev => prev.map(u => u.id === currentUser.id ? updatedUser : u))
+    await updateUser(currentUser.id, updatedUser).catch(console.error)
 
     // Update current user session
-    const updatedUser = { ...currentUser, ...editData }
     setCurrentUser(updatedUser)
     localStorage.setItem('portal_current_user', JSON.stringify(updatedUser))
 
@@ -1689,6 +1756,7 @@ function App() {
     // Update States
     setCurrentUser(updatedUser);
     setUsers(users.map(u => u.id === updatedUser.id ? updatedUser : u));
+    updateUser(updatedUser.id, updatedUser).catch(console.error);
     setCibilHistory([newReport, ...cibilHistory]);
     setCibilResult(newReport);
     setCibilLoading(false);
@@ -1698,6 +1766,16 @@ function App() {
 
   const adminWalletBalance = users.find(u => (u.accountRole || u.role) === 'admin')?.walletBalance || 0
 
+  if (usersLoading) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0f172a', color: '#6366f1', fontFamily: 'sans-serif' }}>
+        <div style={{ textAlign: 'center' }}>
+          <h2 style={{ marginBottom: '8px' }}>SkyTree Services</h2>
+          <p style={{ color: '#94a3b8', fontSize: '14px' }}>Securing database cloud link...</p>
+        </div>
+      </div>
+    );
+  }
   return (
     <>
       <div className="bg-mesh" />
@@ -2117,7 +2195,7 @@ function App() {
                                     </button>
                                     <button
                                       className="action-btn delete"
-                                      onClick={() => deleteUser(u.id)}
+                                      onClick={() => deleteUser(Number(u.id))}
                                       title="Delete User"
                                       disabled={u.role === 'admin'}
                                     >
@@ -4161,6 +4239,7 @@ function App() {
                               const updatedUser = { ...currentUser, walletBalance: currentUser.walletBalance - serviceFee, transactions: [newTransaction, ...(currentUser.transactions || [])] }
                               setCurrentUser(updatedUser)
                               setUsers(users.map(u => u.id === updatedUser.id ? updatedUser : u))
+                              updateUser(updatedUser.id, updatedUser).catch(console.error);
                               if (!applyServiceFinanceOnSubmission(newSubmission)) return;
                               setServiceForms([newSubmission, ...serviceForms])
                               alert('Form submitted successfully! Application Number: ' + formNo + '. Service charge deducted: Rs ' + getSubmissionChargeAmount(newSubmission).toFixed(2))
@@ -4297,6 +4376,7 @@ function App() {
                               const updatedUser = { ...currentUser, walletBalance: currentUser.walletBalance - serviceFee, transactions: [newTransaction, ...(currentUser.transactions || [])] }
                               setCurrentUser(updatedUser)
                               setUsers(users.map(u => u.id === updatedUser.id ? updatedUser : u))
+                              updateUser(updatedUser.id, updatedUser).catch(console.error);
                               if (!applyServiceFinanceOnSubmission(newSubmission)) return;
                               setServiceForms([newSubmission, ...serviceForms])
                               alert('Form submitted successfully! Application Number: ' + formNo + '. Service charge deducted: Rs ' + getSubmissionChargeAmount(newSubmission).toFixed(2))
@@ -4432,6 +4512,7 @@ function App() {
                               const updatedUser = { ...currentUser, walletBalance: currentUser.walletBalance - serviceFee, transactions: [newTransaction, ...(currentUser.transactions || [])] }
                               setCurrentUser(updatedUser)
                               setUsers(users.map(u => u.id === updatedUser.id ? updatedUser : u))
+                              updateUser(updatedUser.id, updatedUser).catch(console.error);
                               if (!applyServiceFinanceOnSubmission(newSubmission)) return;
                               setServiceForms([newSubmission, ...serviceForms])
                               alert('Form submitted successfully! Application Number: ' + formNo + '. Service charge deducted: Rs ' + getSubmissionChargeAmount(newSubmission).toFixed(2))
@@ -4568,6 +4649,7 @@ function App() {
                               const updatedUser = { ...currentUser, walletBalance: currentUser.walletBalance - serviceFee, transactions: [newTransaction, ...(currentUser.transactions || [])] }
                               setCurrentUser(updatedUser)
                               setUsers(users.map(u => u.id === updatedUser.id ? updatedUser : u))
+                              updateUser(updatedUser.id, updatedUser).catch(console.error);
                               if (!applyServiceFinanceOnSubmission(newSubmission)) return;
                               setServiceForms([newSubmission, ...serviceForms])
                               alert('Form submitted successfully! Application Number: ' + formNo + '. Service charge deducted: Rs ' + getSubmissionChargeAmount(newSubmission).toFixed(2))
@@ -4749,6 +4831,7 @@ function App() {
                               const updatedUser = { ...currentUser, walletBalance: currentUser.walletBalance - serviceFee, transactions: [newTransaction, ...(currentUser.transactions || [])] }
                               setCurrentUser(updatedUser)
                               setUsers(users.map(u => u.id === updatedUser.id ? updatedUser : u))
+                              updateUser(updatedUser.id, updatedUser).catch(console.error);
                               if (!applyServiceFinanceOnSubmission(newSubmission)) return;
                               setServiceForms([newSubmission, ...serviceForms])
                               alert('Form submitted successfully! Application Number: ' + formNo + '. Service charge deducted: Rs ' + getSubmissionChargeAmount(newSubmission).toFixed(2))
@@ -4861,6 +4944,7 @@ function App() {
                               const updatedUser = { ...currentUser, walletBalance: currentUser.walletBalance - serviceFee, transactions: [newTransaction, ...(currentUser.transactions || [])] }
                               setCurrentUser(updatedUser)
                               setUsers(users.map(u => u.id === updatedUser.id ? updatedUser : u))
+                              updateUser(updatedUser.id, updatedUser).catch(console.error);
                               if (!applyServiceFinanceOnSubmission(newSubmission)) return;
                               setServiceForms([newSubmission, ...serviceForms])
                               alert('Form submitted successfully! Application Number: ' + formNo + '. Service charge deducted: Rs ' + getSubmissionChargeAmount(newSubmission).toFixed(2))
@@ -4974,6 +5058,7 @@ function App() {
                               const updatedUser = { ...currentUser, walletBalance: currentUser.walletBalance - serviceFee, transactions: [newTransaction, ...(currentUser.transactions || [])] }
                               setCurrentUser(updatedUser)
                               setUsers(users.map(u => u.id === updatedUser.id ? updatedUser : u))
+                              updateUser(updatedUser.id, updatedUser).catch(console.error);
                               if (!applyServiceFinanceOnSubmission(newSubmission)) return;
                               setServiceForms([newSubmission, ...serviceForms])
                               alert('Form submitted successfully! Application Number: ' + formNo + '. Service charge deducted: Rs ' + getSubmissionChargeAmount(newSubmission).toFixed(2))
@@ -5089,6 +5174,7 @@ function App() {
                               const updatedUser = { ...currentUser, walletBalance: currentUser.walletBalance - serviceFee, transactions: [newTransaction, ...(currentUser.transactions || [])] }
                               setCurrentUser(updatedUser)
                               setUsers(users.map(u => u.id === updatedUser.id ? updatedUser : u))
+                              updateUser(updatedUser.id, updatedUser).catch(console.error);
                               if (!applyServiceFinanceOnSubmission(newSubmission)) return;
                               setServiceForms([newSubmission, ...serviceForms])
                               alert('Form submitted successfully! Application Number: ' + formNo + '. Service charge deducted: Rs ' + getSubmissionChargeAmount(newSubmission).toFixed(2))

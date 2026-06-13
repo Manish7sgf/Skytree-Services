@@ -49,6 +49,8 @@ const DEFAULT_USERS = [
 // Seed default users if Firestore is empty
 export const seedUsersIfEmpty = async () => {
   const snapshot = await getDocs(collection(db, USERS_COLLECTION));
+  console.log('Checking if Firestore is empty...');
+  console.log('Snapshot empty:', snapshot.empty);
   if (snapshot.empty) {
     for (const user of DEFAULT_USERS) {
       await setDoc(doc(db, USERS_COLLECTION, String(user.id)), user);
@@ -80,6 +82,48 @@ export const updateUser = async (userId: number, updates: any) => {
 // Delete a user
 export const deleteUser = async (userId: number) => {
   await deleteDoc(doc(db, USERS_COLLECTION, String(userId)));
+};
+
+// Force seed default users to Firestore (use with caution)
+export const forceReseedUsers = async () => {
+  const defaultUsersData = [
+    {
+      id: 1,
+      name: 'Admin User',
+      shopName: 'Admin Hub',
+      email: 'admin@portal.com',
+      phone: '0000000000',
+      district: 'Tamilnadu',
+      address: '',
+      username: 'Admin',
+      password: 'Rasool@',
+      role: 'ADMIN',
+      status: 'Approved',
+      balance: 0,
+      transactions: [],
+      services: [],
+    },
+    {
+      id: 2,
+      name: 'Sample Retailer',
+      shopName: 'Sample Shop',
+      email: 'sample@retail.com',
+      phone: '9876543210',
+      district: 'Chennai',
+      address: '',
+      username: 'Sample',
+      password: 'Welcome@123',
+      role: 'USER',
+      status: 'Approved',
+      balance: 500,
+      transactions: [],
+      services: [],
+    },
+  ];
+  for (const user of defaultUsersData) {
+    await setDoc(doc(db, USERS_COLLECTION, String(user.id)), user);
+    console.log('Seeded user:', user.username);
+  }
 };
 
 // Save all users (batch update)
