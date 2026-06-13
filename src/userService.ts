@@ -58,8 +58,8 @@ export const seedUsersIfEmpty = async () => {
 
 // Subscribe to users collection in real-time
 export const subscribeToUsers = (callback: (users: any[]) => void) => {
-  return onSnapshot(collection(db, USERS_COLLECTION), (snapshot) => {
-    const users = snapshot.docs.map(d => ({
+  return onSnapshot(collection(db, USERS_COLLECTION), (snapshot: any) => {
+    const users = snapshot.docs.map((d: any) => ({
       ...d.data(),
       id: Number(d.id),
     }));
