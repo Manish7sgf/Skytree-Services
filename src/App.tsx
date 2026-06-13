@@ -1072,6 +1072,7 @@ function App() {
           {
             to_name: user.name,
             to_email: user.email,
+            email: user.email,
             username: finalUsername,
             password: 'Welcome@123',
             shop_name: user.shopName
