@@ -2,6 +2,32 @@ import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } fro
 import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
 
+// CDN libraries loaded dynamically — no npm install required
+const JSZIP_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'
+const DOCX_PREVIEW_CDN = 'https://cdn.jsdelivr.net/npm/docx-preview@0.1.15/dist/docx-preview.min.js'
+const DOCX_PREVIEW_CSS = 'https://cdn.jsdelivr.net/npm/docx-preview@0.1.15/dist/docx-preview.css'
+const PDFJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
+const PDFJS_WORKER_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
+
+const loadScript = (src: string): Promise<void> => new Promise((resolve, reject) => {
+  if (document.querySelector(`script[src="${src}"]`)) { resolve(); return }
+  const s = document.createElement('script')
+  s.src = src
+  s.onload = () => resolve()
+  s.onerror = () => reject(new Error(`Failed to load script: ${src}`))
+  document.head.appendChild(s)
+})
+
+const loadStylesheet = (href: string): Promise<void> => new Promise((resolve, reject) => {
+  if (document.querySelector(`link[href="${href}"]`)) { resolve(); return }
+  const link = document.createElement('link')
+  link.rel = 'stylesheet'
+  link.href = href
+  link.onload = () => resolve()
+  link.onerror = () => reject(new Error(`Failed to load stylesheet: ${href}`))
+  document.head.appendChild(link)
+})
+
 type ResumeModuleKey =
   | 'resume-normal'
   | 'resume-first-year'
@@ -262,11 +288,15 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
   const [educationRows, setEducationRows] = useState<EducationRow[]>(createInitialEducationRows())
   const [experienceRows, setExperienceRows] = useState<ExperienceRow[]>(createInitialExperienceRows())
   const [uploadedFileName, setUploadedFileName] = useState('')
-  const [uploadedFileType, setUploadedFileType] = useState('')
-  const [utilityContent, setUtilityContent] = useState('')
   const [isPdfGenerating, setIsPdfGenerating] = useState(false)
   const [customFields, setCustomFields] = useState<CustomField[]>([])
   const [showPreview, setShowPreview] = useState(false)
+  // Document utility module state
+  const [docBlob, setDocBlob] = useState<Blob | null>(null)
+  const [pdfPages, setPdfPages] = useState<string[]>([])
+  const [isParsingDoc, setIsParsingDoc] = useState(false)
+  const [parseError, setParseError] = useState('')
+  const [originalFileUrl, setOriginalFileUrl] = useState('')
   const moduleTitle = moduleLabels[typedModuleKey]
   const isBuilderModule = !typedModuleKey.includes('word-to-pdf') && !typedModuleKey.includes('edit-pdf') && !typedModuleKey.includes('edit-word-pdf')
   const showProjectsByType = typedModuleKey === 'resume-first-year' || typedModuleKey === 'resume-fresher'
@@ -285,6 +315,40 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
     }))
     setEducationLayout(typedModuleKey === 'resume-first-year' || typedModuleKey === 'resume-fresher' ? 'cards' : 'table')
   }, [typedModuleKey])
+
+  // Render the Word document using docx-preview when showPreview is active
+  useEffect(() => {
+    if ((typedModuleKey === 'resume-word-to-pdf' || typedModuleKey === 'resume-edit-word-pdf') && showPreview && previewRef.current && docBlob) {
+      const renderDoc = async () => {
+        try {
+          const docx = (window as any).docx
+          if (!docx) return
+
+          previewRef.current!.innerHTML = ''
+
+          await docx.renderAsync(docBlob, previewRef.current, null, {
+            inWrapper: false,
+            ignoreWidth: false,
+            ignoreHeight: false,
+            breakPages: true,
+            useBase64URL: true
+          })
+
+          if (typedModuleKey === 'resume-edit-word-pdf') {
+            const sections = previewRef.current!.querySelectorAll('section.docx')
+            sections.forEach((sec: any) => {
+              sec.contentEditable = 'true'
+              sec.style.outline = '1px dashed rgba(99, 102, 241, 0.4)'
+              sec.style.cursor = 'text'
+            })
+          }
+        } catch (err) {
+          console.error('docx-preview render error:', err)
+        }
+      }
+      renderDoc()
+    }
+  }, [docBlob, showPreview, typedModuleKey])
 
   const updateFormData = (key: keyof ResumeFormData, value: string) => {
     setFormData(prev => ({ ...prev, [key]: value }))
@@ -338,11 +402,70 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
     setPhotoData(data)
   }
 
+  // Parse a .docx Word file using docx-preview (loaded from CDN)
+  const parseWordFile = async (file: File) => {
+    setIsParsingDoc(true)
+    setParseError('')
+    setDocBlob(null)
+    try {
+      await loadScript(JSZIP_CDN)
+      await loadStylesheet(DOCX_PREVIEW_CSS)
+      await loadScript(DOCX_PREVIEW_CDN)
+      const docx = (window as any).docx
+      if (!docx) throw new Error('docx-preview library not loaded')
+      setDocBlob(file)
+    } catch (_err) {
+      setParseError('Failed to read Word file. Please check your internet connection or ensure it is a valid .docx file.')
+    } finally {
+      setIsParsingDoc(false)
+    }
+  }
+
+  // Render all PDF pages to canvas images using pdf.js (loaded from CDN)
+  const renderPdfPages = async (file: File) => {
+    setIsParsingDoc(true)
+    setParseError('')
+    setPdfPages([])
+    if (originalFileUrl) URL.revokeObjectURL(originalFileUrl)
+    setOriginalFileUrl(URL.createObjectURL(file))
+    try {
+      await loadScript(PDFJS_CDN)
+      const pdfjs = (window as any).pdfjsLib
+      if (!pdfjs) throw new Error('PDF.js not loaded')
+      pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_CDN
+      const arrayBuffer = await file.arrayBuffer()
+      const pdfDoc = await pdfjs.getDocument({ data: arrayBuffer }).promise
+      const pages: string[] = []
+      for (let i = 1; i <= pdfDoc.numPages; i++) {
+        const page = await pdfDoc.getPage(i)
+        const viewport = page.getViewport({ scale: 1.5 })
+        const canvas = document.createElement('canvas')
+        canvas.width = viewport.width
+        canvas.height = viewport.height
+        const ctx = canvas.getContext('2d')!
+        await page.render({ canvasContext: ctx, viewport }).promise
+        pages.push(canvas.toDataURL('image/png'))
+      }
+      setPdfPages(pages)
+    } catch (_err) {
+      setParseError('Failed to render PDF. The file may be corrupted or password-protected.')
+    } finally {
+      setIsParsingDoc(false)
+    }
+  }
+
   const handleDocumentUpload = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
     setUploadedFileName(file.name)
-    setUploadedFileType(file.type)
+    setDocBlob(null)
+    setPdfPages([])
+    setParseError('')
+    if (typedModuleKey === 'resume-word-to-pdf' || typedModuleKey === 'resume-edit-word-pdf') {
+      parseWordFile(file)
+    } else if (typedModuleKey === 'resume-edit-pdf') {
+      renderPdfPages(file)
+    }
   }
 
   const getPreviewHtmlDocument = () => {
@@ -356,6 +479,7 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
         table { border-collapse: collapse; width: 100%; font-size: 11px; }
         table th, table td { border: 1px solid #b9b9b9; padding: 6px; text-align: left; vertical-align: top; }
       </style>
+      <link rel="stylesheet" href="${DOCX_PREVIEW_CSS}" />
     `
 
     return `<!doctype html><html><head><meta charset="utf-8" />${styles}</head><body>${content}</body></html>`
@@ -376,6 +500,79 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
   }
 
   const downloadPdf = async () => {
+    if (typedModuleKey === 'resume-edit-pdf') {
+      if (pdfPages.length === 0) return
+      setIsPdfGenerating(true)
+      try {
+        const pdf = new jsPDF('p', 'mm', 'a4')
+        for (let i = 0; i < pdfPages.length; i++) {
+          const imgData = pdfPages[i]
+          const pdfWidth = pdf.internal.pageSize.getWidth()
+          const pdfHeight = pdf.internal.pageSize.getHeight()
+          if (i > 0) {
+            pdf.addPage()
+          }
+          pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight, '', 'FAST')
+        }
+        pdf.save(`${uploadedFileName || 'document'}.pdf`)
+      } catch (err) {
+        console.error('Error generating PDF:', err)
+        alert('Failed to generate PDF.')
+      } finally {
+        setIsPdfGenerating(false)
+      }
+      return
+    }
+
+    if (typedModuleKey === 'resume-word-to-pdf' || typedModuleKey === 'resume-edit-word-pdf') {
+      if (!previewRef.current) return
+      const sections = previewRef.current.querySelectorAll('section.docx')
+      if (sections.length === 0) {
+        alert('No document pages found to export.')
+        return
+      }
+      setIsPdfGenerating(true)
+      try {
+        // Temporarily hide editable outlines
+        sections.forEach((sec: any) => {
+          sec.style.outline = 'none'
+        })
+
+        const pdf = new jsPDF('p', 'mm', 'a4')
+        for (let i = 0; i < sections.length; i++) {
+          const section = sections[i] as HTMLElement
+          const canvas = await html2canvas(section, {
+            scale: 2,
+            useCORS: true,
+            backgroundColor: '#ffffff'
+          })
+          const imgData = canvas.toDataURL('image/png')
+          const pdfWidth = pdf.internal.pageSize.getWidth()
+          const pdfHeight = pdf.internal.pageSize.getHeight()
+          if (i > 0) {
+            pdf.addPage()
+          }
+          pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight, '', 'FAST')
+        }
+
+        // Restore outlines if editable
+        if (typedModuleKey === 'resume-edit-word-pdf') {
+          sections.forEach((sec: any) => {
+            sec.style.outline = '1px dashed rgba(99, 102, 241, 0.4)'
+          })
+        }
+
+        pdf.save(`${uploadedFileName || 'document'}.pdf`)
+      } catch (err) {
+        console.error('Error generating PDF:', err)
+        alert('Failed to generate PDF.')
+      } finally {
+        setIsPdfGenerating(false)
+      }
+      return
+    }
+
+    // Default builder download logic
     if (!previewRef.current) return
     setIsPdfGenerating(true)
     try {
@@ -405,6 +602,8 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
       }
 
       pdf.save(`${moduleTitle.replace(/\s+/g, '_')}.pdf`)
+    } catch (err) {
+      console.error('Error generating PDF:', err)
     } finally {
       setIsPdfGenerating(false)
     }
@@ -696,30 +895,58 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                 <h4 style={{margin: 0 }}>Document Assistant</h4>
-                <button className="btn-primary" onClick={() => setShowPreview(true)}>👁️ Preview & Download</button>
+                <button
+                  className="btn-primary"
+                  onClick={() => setShowPreview(true)}
+                  disabled={!uploadedFileName || isParsingDoc}
+                  style={(!uploadedFileName || isParsingDoc) ? { opacity: 0.5, cursor: 'not-allowed' } : {}}
+                >
+                  👁️ Preview &amp; Download
+                </button>
               </div>
-              <p className="p" style={{ margin: 0, fontSize: '13px' }}>
-                Upload the source resume and provide corrected content below. The live A4 preview can be saved as Word or PDF.
+              <p className="p" style={{ margin: '0 0 14px', fontSize: '13px' }}>
+                {typedModuleKey === 'resume-word-to-pdf' && 'Upload a Word (.docx) file — it will be parsed and rendered as a printable A4 PDF.'}
+                {typedModuleKey === 'resume-edit-pdf' && 'Upload a PDF file — all pages will be rendered so you can view and download it.'}
+                {typedModuleKey === 'resume-edit-word-pdf' && 'Upload a Word (.docx) file — content is extracted and made directly editable in the A4 preview.'}
               </p>
               <div className="form-group">
-                <label className="form-label">Upload source file</label>
+                <label className="form-label">
+                  {typedModuleKey === 'resume-edit-pdf' ? 'Upload PDF file' : 'Upload Word (.docx) file'}
+                </label>
                 <input
                   type="file"
                   className="input-field"
-                  accept={typedModuleKey === 'resume-word-to-pdf' || typedModuleKey === 'resume-edit-word-pdf' ? '.doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document' : '.pdf,application/pdf'}
+                  accept={typedModuleKey === 'resume-word-to-pdf' || typedModuleKey === 'resume-edit-word-pdf' ? '.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document' : '.pdf,application/pdf'}
                   onChange={handleDocumentUpload}
                 />
               </div>
-              <div className="form-group">
-                <label className="form-label">Editable content</label>
-                <textarea
-                  className="input-field"
-                  rows={18}
-                  value={utilityContent}
-                  onChange={(e) => setUtilityContent(e.target.value)}
-                  placeholder="Paste or type the updated resume content here..."
-                />
-              </div>
+
+              {isParsingDoc && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 16px', background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: '10px', marginTop: '12px' }}>
+                  <div style={{ width: '18px', height: '18px', border: '3px solid #6366f1', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+                  <span style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
+                    {typedModuleKey === 'resume-edit-pdf' ? 'Rendering PDF pages… this may take a moment for large files.' : 'Parsing Word document…'}
+                  </span>
+                </div>
+              )}
+
+              {parseError && (
+                <div style={{ padding: '12px 16px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '10px', color: '#ef4444', fontSize: '13px', marginTop: '12px' }}>
+                  ⚠️ {parseError}
+                </div>
+              )}
+
+              {!isParsingDoc && uploadedFileName && !parseError && (
+                <div style={{ padding: '12px 16px', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: '10px', color: '#10b981', fontSize: '13px', marginTop: '12px' }}>
+                  ✅ <strong>{uploadedFileName}</strong> loaded successfully.
+                  {typedModuleKey === 'resume-edit-pdf' && pdfPages.length > 0 && ` ${pdfPages.length} page(s) rendered.`}
+                  {(typedModuleKey === 'resume-word-to-pdf' || typedModuleKey === 'resume-edit-word-pdf') && docBlob && ' Content extracted.'}
+                  <span style={{ color: 'var(--text-muted)', display: 'block', marginTop: '4px', fontSize: '12px' }}>
+                    Click &quot;Preview &amp; Download&quot; above to continue.
+                    {typedModuleKey === 'resume-edit-word-pdf' && ' You can edit the content directly in the preview panel.'}
+                  </span>
+                </div>
+              )}
             </>
           )}
           </div>
@@ -727,17 +954,41 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
           <div className="resume-preview-pane" style={{ maxWidth: '800px', margin: '0 auto' }}>
             <div className="resume-preview-toolbar" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
               <button className="btn-primary" onClick={() => setShowPreview(false)}>⬅️ Back to Editor</button>
-              <button className="btn-primary" onClick={downloadPdf} disabled={isPdfGenerating}>{isPdfGenerating ? '⏳ Saving PDF...' : '📥 Download PDF'}</button>
+              <button
+                className="btn-primary"
+                disabled={isPdfGenerating}
+                onClick={downloadPdf}
+              >
+                {isPdfGenerating ? '⏳ Saving PDF...' : '📥 Download PDF'}
+              </button>
               <button className="btn-primary" onClick={printPreview}>🖨️ Print</button>
             </div>
 
             <div className="resume-sheet-scroll">
+              {/* External source file status metadata for the preview panel */}
+              {docBlob && (
+                <div style={{ maxWidth: '800px', margin: '0 auto 12px', padding: '12px 16px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '13px', color: 'var(--text-main)' }}>
+                    📄 Source: <strong>{uploadedFileName}</strong>
+                  </span>
+                  {typedModuleKey === 'resume-edit-word-pdf' && (
+                    <span style={{ fontSize: '12px', color: '#818cf8', fontWeight: '500' }}>
+                      ✏️ Click any text on the pages below to edit
+                    </span>
+                  )}
+                </div>
+              )}
+
               <div
                 className={`resume-a4-sheet resume-theme-${theme}`}
                 ref={previewRef}
-                style={{ '--resume-accent': accentColor } as CSSProperties}
+                style={{
+                  '--resume-accent': accentColor,
+                  // Allow auto height and transparent styling for PDF and Word viewers so they render their own pages correctly
+                  ...((typedModuleKey === 'resume-edit-pdf' || typedModuleKey === 'resume-word-to-pdf' || typedModuleKey === 'resume-edit-word-pdf') ? { minHeight: 'auto', height: 'auto', background: 'transparent', padding: '0', boxShadow: 'none' } : {})
+                } as CSSProperties}
               >
-              <div className="resume-watermark">{moduleTitle}</div>
+              {isBuilderModule && <div className="resume-watermark">{moduleTitle}</div>}
               {isBuilderModule ? (
                 <>
                   <div className="resume-header">
@@ -880,19 +1131,34 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
                 </>
               ) : (
                 <>
-                  <h1 className="resume-heading" style={{ marginBottom: '6px' }}>{moduleTitle}</h1>
-                  <p style={{ margin: '0 0 10px', color: '#52525b' }}>Source file: {uploadedFileName || 'Not uploaded'}</p>
-                  <p style={{ margin: '0 0 16px', color: '#52525b' }}>File type: {uploadedFileType || 'N/A'}</p>
-                  <div className="resume-section-title">Edited Content</div>
-                  <p style={{ whiteSpace: 'pre-wrap' }}>{utilityContent || 'Paste updated resume text in the left panel to generate final printable output.'}</p>
-                  <div className="resume-footer-block" style={{ marginTop: '40px' }}>
-                    <div>
-                      <p><strong>Prepared On:</strong> {new Date().toLocaleDateString()}</p>
+                  {typedModuleKey === 'resume-edit-pdf' ? (
+                    // PDF Viewer — renders all pages as images
+                    pdfPages.length > 0 ? (
+                      pdfPages.map((src, i) => (
+                        <img
+                          key={i}
+                          src={src}
+                          alt={`Page ${i + 1}`}
+                          style={{ width: '100%', display: 'block', marginBottom: '10px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)', boxShadow: '0 4px 20px rgba(0,0,0,0.35)' }}
+                        />
+                      ))
+                    ) : (
+                      <div style={{ textAlign: 'center', padding: '80px 20px', color: 'var(--text-muted)' }}>
+                        <div style={{ fontSize: '52px', marginBottom: '12px' }}>📄</div>
+                        <p style={{ margin: 0, fontSize: '13px' }}>No PDF loaded. Go back and upload a PDF file.</p>
+                      </div>
+                    )
+                  ) : docBlob ? (
+                    // Word document rendering container for docx-preview.
+                    // docx-preview renders directly into previewRef.current.
+                    null
+                  ) : (
+                    // Empty state before upload
+                    <div style={{ textAlign: 'center', padding: '80px 20px', color: '#94a3b8' }}>
+                      <div style={{ fontSize: '48px', marginBottom: '12px' }}>📝</div>
+                      <p style={{ margin: 0, fontSize: '12px' }}>Upload a Word document to see its content here.</p>
                     </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <p>Digital Signature: ____________________</p>
-                    </div>
-                  </div>
+                  )}
                 </>
               )}
             </div>

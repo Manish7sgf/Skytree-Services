@@ -1087,26 +1087,30 @@ function App() {
       // 3. SMS Notification via Twilio
       setNotificationSteps(prev => [...prev, 'Sending SMS to mobile number...'])
       try {
-        const smsMsg = `Welcome ${user.name}! Your account for ${user.shopName} has been approved. Username: ${finalUsername}, Password: Welcome@123`
-        const twilioAuth = btoa(`${import.meta.env.VITE_TWILIO_ACCOUNT_SID}:${import.meta.env.VITE_TWILIO_AUTH_TOKEN}`)
+        if (import.meta.env.VITE_TWILIO_ACCOUNT_SID) {
+          const smsMsg = `Welcome ${user.name}! Your account for ${user.shopName} has been approved. Username: ${finalUsername}, Password: Welcome@123`
+          const twilioAuth = btoa(`${import.meta.env.VITE_TWILIO_ACCOUNT_SID}:${import.meta.env.VITE_TWILIO_AUTH_TOKEN}`)
 
-        const smsRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${import.meta.env.VITE_TWILIO_ACCOUNT_SID}/Messages.json`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Authorization': `Basic ${twilioAuth}`
-          },
-          body: new URLSearchParams({
-            To: user.phone,
-            From: import.meta.env.VITE_TWILIO_PHONE_NUMBER,
-            Body: smsMsg
+          const smsRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${import.meta.env.VITE_TWILIO_ACCOUNT_SID}/Messages.json`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'Authorization': `Basic ${twilioAuth}`
+            },
+            body: new URLSearchParams({
+              To: user.phone,
+              From: import.meta.env.VITE_TWILIO_PHONE_NUMBER,
+              Body: smsMsg
+            })
           })
-        })
 
-        if (smsRes.ok) {
-          setNotificationSteps(prev => [...prev, 'SMS sent to mobile number via Twilio.'])
+          if (smsRes.ok) {
+            setNotificationSteps(prev => [...prev, 'SMS sent to mobile number via Twilio.'])
+          } else {
+            throw new Error('Twilio SMS Failed')
+          }
         } else {
-          throw new Error('Twilio SMS Failed')
+          console.log('Twilio not configured - SMS skipped');
         }
       } catch (smsErr) {
         console.error('Twilio SMS Error:', smsErr)
@@ -1116,25 +1120,29 @@ function App() {
       // 4. WhatsApp Notification via Twilio
       setNotificationSteps(prev => [...prev, 'Sending WhatsApp confirmation...'])
       try {
-        const waAuth = btoa(`${import.meta.env.VITE_TWILIO_ACCOUNT_SID}:${import.meta.env.VITE_TWILIO_AUTH_TOKEN}`)
+        if (import.meta.env.VITE_TWILIO_ACCOUNT_SID) {
+          const waAuth = btoa(`${import.meta.env.VITE_TWILIO_ACCOUNT_SID}:${import.meta.env.VITE_TWILIO_AUTH_TOKEN}`)
 
-        const waRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${import.meta.env.VITE_TWILIO_ACCOUNT_SID}/Messages.json`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Authorization': `Basic ${waAuth}`
-          },
-          body: new URLSearchParams({
-            To: `whatsapp:${user.phone}`,
-            From: `whatsapp:${import.meta.env.VITE_TWILIO_PHONE_NUMBER}`,
-            Body: `Welcome ${user.name}! Your account is ready. Username: ${finalUsername}, Password: Welcome@123`
+          const waRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${import.meta.env.VITE_TWILIO_ACCOUNT_SID}/Messages.json`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'Authorization': `Basic ${waAuth}`
+            },
+            body: new URLSearchParams({
+              To: `whatsapp:${user.phone}`,
+              From: `whatsapp:${import.meta.env.VITE_TWILIO_PHONE_NUMBER}`,
+              Body: `Welcome ${user.name}! Your account is ready. Username: ${finalUsername}, Password: Welcome@123`
+            })
           })
-        })
 
-        if (waRes.ok) {
-          setNotificationSteps(prev => [...prev, 'WhatsApp confirmation delivered.'])
+          if (waRes.ok) {
+            setNotificationSteps(prev => [...prev, 'WhatsApp confirmation delivered.'])
+          } else {
+            throw new Error('Twilio WhatsApp Failed')
+          }
         } else {
-          throw new Error('Twilio WhatsApp Failed')
+          console.log('Twilio not configured - WhatsApp skipped');
         }
       } catch (waErr) {
         console.error('Twilio WhatsApp Error:', waErr)
