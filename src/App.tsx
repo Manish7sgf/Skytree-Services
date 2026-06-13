@@ -10,7 +10,6 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import {
   seedUsersIfEmpty,
   subscribeToUsers,
-  saveAllUsers,
 } from './userService'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
@@ -325,7 +324,6 @@ function App() {
 
   useEffect(() => {
     localStorage.setItem('portal_users', JSON.stringify(users))
-    saveAllUsers(users).catch(console.error);
   }, [users])
 
   useEffect(() => {
