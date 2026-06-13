@@ -7,6 +7,11 @@ import ResumeServiceModule from './components/ResumeServiceModule'
 import PhotoStudioServiceModule from './components/PhotoStudioServiceModule'
 import { useFileOptimizer, type ProcessedFile } from './hooks/useFileOptimizer'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import {
+  seedUsersIfEmpty,
+  subscribeToUsers,
+  saveAllUsers,
+} from './userService'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
 
@@ -301,6 +306,18 @@ function App() {
     ]
   })
 
+  // Sync with Firestore
+  useEffect(() => {
+    seedUsersIfEmpty().then(() => {
+      const unsubscribe = subscribeToUsers((firestoreUsers) => {
+        if (firestoreUsers.length > 0) {
+          setUsers(firestoreUsers as any);
+        }
+      });
+      return unsubscribe;
+    });
+  }, [])
+
   const [treeCounter, setTreeCounter] = useState(() => {
     const saved = localStorage.getItem('portal_tree_counter')
     return saved ? parseInt(saved) : 1
@@ -308,6 +325,7 @@ function App() {
 
   useEffect(() => {
     localStorage.setItem('portal_users', JSON.stringify(users))
+    saveAllUsers(users).catch(console.error);
   }, [users])
 
   useEffect(() => {
