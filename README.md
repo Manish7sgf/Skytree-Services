@@ -3,7 +3,7 @@
 ## License
 
 This project is proprietary and closed-source. 
-Copyright (c) 2026 Manish Varman M. All rights reserved.
+Copyright (c) 2026 Manish Varman M and Yaminah A. All rights reserved.
 
 This code is publicly visible for portfolio/demonstration 
 purposes only. You may NOT copy, fork, redistribute, 
