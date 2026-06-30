@@ -1,5 +1,16 @@
 # Skytree Services Portal
 
+## License
+
+This project is proprietary and closed-source. 
+Copyright (c) 2026 Manish Varman M. All rights reserved.
+
+This code is publicly visible for portfolio/demonstration 
+purposes only. You may NOT copy, fork, redistribute, 
+deploy, or reuse this code or any part of it without 
+explicit written permission from the copyright holder. 
+See the [LICENSE](./LICENSE) file for full terms.
+
 A feature-rich, high-performance web application designed for digital services hubs, retailers, and distributors. Skytree compiles essential utilities—ranging from a full-fledged passport photo editor to professional document builders, government portal integrations, and a multi-level transaction ledger system—into a unified, responsive client interface.
 
 ---
