@@ -86,6 +86,69 @@ const readImageAsDataUrl = (file: File): Promise<string> =>
     reader.readAsDataURL(file)
   })
 
+const getCroppedImg = (image: HTMLImageElement, completedCrop: PixelCrop): string | null => {
+  if (!completedCrop || !completedCrop.width || !completedCrop.height) {
+    return null
+  }
+  const canvas = document.createElement('canvas')
+  const scaleX = image.naturalWidth / image.width
+  const scaleY = image.naturalHeight / image.height
+  canvas.width = completedCrop.width * scaleX
+  canvas.height = completedCrop.height * scaleY
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  ctx.drawImage(
+    image,
+    completedCrop.x * scaleX,
+    completedCrop.y * scaleY,
+    completedCrop.width * scaleX,
+    completedCrop.height * scaleY,
+    0,
+    0,
+    completedCrop.width * scaleX,
+    completedCrop.height * scaleY
+  )
+  return canvas.toDataURL('image/png', 1)
+}
+
+const getCroppedImgDirect = (image: HTMLImageElement, naturalBox: { x: number; y: number; width: number; height: number }): string | null => {
+  const canvas = document.createElement('canvas')
+  canvas.width = naturalBox.width
+  canvas.height = naturalBox.height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  ctx.drawImage(
+    image,
+    naturalBox.x,
+    naturalBox.y,
+    naturalBox.width,
+    naturalBox.height,
+    0,
+    0,
+    naturalBox.width,
+    naturalBox.height
+  )
+  return canvas.toDataURL('image/png', 1)
+}
+
+let cvInstance: any = null
+
+async function getCv() {
+  if (cvInstance) return cvInstance
+  const cvModule = (await import('@techstark/opencv-js') as any).default
+  if (cvModule instanceof Promise) {
+    cvInstance = await cvModule
+  } else if (cvModule.Mat) {
+    cvInstance = cvModule
+  } else {
+    await new Promise<void>((resolve) => {
+      cvModule.onRuntimeInitialized = () => resolve()
+    })
+    cvInstance = cvModule
+  }
+  return cvInstance
+}
+
 export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps) {
   const [uploadedImage, setUploadedImage] = useState('')
   const [step, setStep] = useState<'upload' | 'edit' | 'layout'>('upload')
@@ -98,42 +161,256 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
   const [completedCrop, setCompletedCrop] = useState<PixelCrop>()
   const cropImageRef = useRef<HTMLImageElement>(null)
 
+  // Card specific crops and images
+  const [frontCardImage, setFrontCardImage] = useState<string>('')
+  const [backCardImage, setBackCardImage] = useState<string>('')
+  const [frontCrop, setFrontCrop] = useState<Crop>()
+  const [frontCompletedCrop, setFrontCompletedCrop] = useState<PixelCrop>()
+  const [backCrop, setBackCrop] = useState<Crop>()
+  const [backCompletedCrop, setBackCompletedCrop] = useState<PixelCrop>()
+  const [activeCropSide, setActiveCropSide] = useState<'front' | 'back'>('front')
+  const [frontSourceImage, setFrontSourceImage] = useState<string>('')
+  const [backSourceImage, setBackSourceImage] = useState<string>('')
+  const [isDetecting, setIsDetecting] = useState(false)
+  const [detectionMessage, setDetectionMessage] = useState('')
+  const [hasAutoDetected, setHasAutoDetected] = useState(false)
+
+  const detectCardRegions = async (
+    imageElement: HTMLImageElement
+  ): Promise<{
+    front: { percent: Crop; pixel: PixelCrop; natural: { x: number; y: number; width: number; height: number } } | null;
+    back: { percent: Crop; pixel: PixelCrop; natural: { x: number; y: number; width: number; height: number } } | null;
+  }> => {
+    const cv = await getCv()
+    const src = cv.imread(imageElement)
+    const naturalW = src.cols
+    const naturalH = src.rows
+    const clientW = imageElement.width
+    const clientH = imageElement.height
+    const scaleX = clientW / naturalW
+    const scaleY = clientH / naturalH
+
+    const gray = new cv.Mat()
+    const blurred = new cv.Mat()
+    const edges = new cv.Mat()
+
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0)
+    const ksize = new cv.Size(5, 5)
+    cv.GaussianBlur(gray, blurred, ksize, 0, 0, cv.BORDER_DEFAULT)
+    cv.Canny(blurred, edges, 50, 150, 3, false)
+
+    const contours = new cv.MatVector()
+    const hierarchy = new cv.Mat()
+    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+
+    const candidates: Array<{ x: number; y: number; width: number; height: number; area: number }> = []
+
+    for (let i = 0; i < contours.size(); ++i) {
+      const cnt = contours.get(i)
+      const area = cv.contourArea(cnt)
+      const minArea = (naturalW * naturalH) * 0.01 // Filter noise
+      if (area < minArea) {
+        cnt.delete()
+        continue
+      }
+
+      const rect = cv.boundingRect(cnt)
+      const rectArea = rect.width * rect.height
+
+      // 1. UPPER AREA BOUND: Reject if bounding box area exceeds 25% of total image area
+      const maxArea = naturalW * naturalH * 0.25
+      if (rectArea > maxArea) {
+        cnt.delete()
+        continue
+      }
+
+      // 2. EDGE-PROXIMITY EXCLUSION: Reject if bounding box touches or hugs borders on >= 2 sides
+      let edgeTouches = 0
+      const limitX = 0.01 * naturalW
+      const limitY = 0.01 * naturalH
+
+      if (rect.x <= limitX) edgeTouches++
+      if (rect.y <= limitY) edgeTouches++
+      if ((rect.x + rect.width) >= 0.99 * naturalW) edgeTouches++
+      if ((rect.y + rect.height) >= 0.99 * naturalH) edgeTouches++
+
+      if (edgeTouches >= 2) {
+        cnt.delete()
+        continue
+      }
+
+      // 3. RECTANGULARITY CHECK: Reject if extent (area fill ratio) < 0.7
+      const extent = area / rectArea
+      if (extent < 0.7) {
+        cnt.delete()
+        continue
+      }
+
+      const peri = cv.arcLength(cnt, true)
+      const approx = new cv.Mat()
+      cv.approxPolyDP(cnt, approx, 0.02 * peri, true)
+      const corners = approx.rows
+
+      const aspect = rect.width / rect.height
+
+      const isLandscape = aspect >= 1.2 && aspect <= 2.0
+      const isPortrait = aspect >= 0.5 && aspect <= 0.83
+
+      if (corners >= 4 && corners <= 8 && (isLandscape || isPortrait)) {
+        candidates.push({
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+          area: area
+        })
+      }
+
+      approx.delete()
+      cnt.delete()
+    }
+
+    contours.delete()
+    hierarchy.delete()
+    src.delete()
+    gray.delete()
+    blurred.delete()
+    edges.delete()
+
+    // Sort by area descending
+    candidates.sort((a, b) => b.area - a.area)
+    const top2 = candidates.slice(0, 2)
+
+    let frontResult: { percent: Crop; pixel: PixelCrop; natural: { x: number; y: number; width: number; height: number } } | null = null
+    let backResult: { percent: Crop; pixel: PixelCrop; natural: { x: number; y: number; width: number; height: number } } | null = null
+
+    const makeCropPair = (box: { x: number; y: number; width: number; height: number }) => {
+      const percent = {
+        unit: '%' as const,
+        x: (box.x / naturalW) * 100,
+        y: (box.y / naturalH) * 100,
+        width: (box.width / naturalW) * 100,
+        height: (box.height / naturalH) * 100
+      }
+      const pixel = {
+        unit: 'px' as const,
+        x: box.x * scaleX,
+        y: box.y * scaleY,
+        width: box.width * scaleX,
+        height: box.height * scaleY
+      }
+      return { percent, pixel, natural: box }
+    }
+
+    if (top2.length === 2) {
+      // Sort topmost first
+      top2.sort((a, b) => a.y - b.y)
+      frontResult = makeCropPair(top2[0])
+      backResult = makeCropPair(top2[1])
+    } else if (top2.length === 1) {
+      const box = top2[0]
+      const centerY = box.y + box.height / 2
+      if (centerY < naturalH / 2) {
+        frontResult = makeCropPair(box)
+      } else {
+        backResult = makeCropPair(box)
+      }
+    }
+
+    return { front: frontResult, back: backResult }
+  }
+
+  const handleAutoDetect = async () => {
+    if (!cropImageRef.current) return
+    setIsDetecting(true)
+    setDetectionMessage('')
+    try {
+      const result = await detectCardRegions(cropImageRef.current)
+      if (result.front) {
+        setFrontCrop(result.front.percent)
+        setFrontCompletedCrop(result.front.pixel)
+      }
+      if (result.back) {
+        setBackCrop(result.back.percent)
+        setBackCompletedCrop(result.back.pixel)
+      }
+
+      if (result.front && result.back) {
+        setDetectionMessage('✅ Auto-detected both card regions successfully!')
+      } else if (result.front) {
+        setDetectionMessage('⚠️ Auto-detected Front Side only. Please crop Back Side manually.')
+      } else if (result.back) {
+        setDetectionMessage('⚠️ Auto-detected Back Side only. Please crop Front Side manually.')
+      } else {
+        setDetectionMessage('❌ Could not detect either side. Please crop manually.')
+      }
+    } catch (error) {
+      console.error('Detection error:', error)
+      setDetectionMessage('❌ Auto-detection failed. Please crop manually.')
+    } finally {
+      setIsDetecting(false)
+    }
+  }
+
   const applyManualCrop = () => {
-    if (!completedCrop || !cropImageRef.current || !completedCrop.width || !completedCrop.height) {
+    if (!cropImageRef.current) {
       setShowManualCrop(false)
       return
     }
-    const image = cropImageRef.current
-    const canvas = document.createElement('canvas')
-    const scaleX = image.naturalWidth / image.width
-    const scaleY = image.naturalHeight / image.height
-    canvas.width = completedCrop.width * scaleX
-    canvas.height = completedCrop.height * scaleY
-    const ctx = canvas.getContext('2d')
-    if (ctx) {
-      ctx.drawImage(
-        image,
-        completedCrop.x * scaleX,
-        completedCrop.y * scaleY,
-        completedCrop.width * scaleX,
-        completedCrop.height * scaleY,
-        0,
-        0,
-        completedCrop.width * scaleX,
-        completedCrop.height * scaleY
-      )
-      const croppedBase64 = canvas.toDataURL('image/png', 1)
-      setUploadedImage(croppedBase64)
 
-      if (batchImages.length > 0) {
-        const updatedBatch = [...batchImages]
-        updatedBatch[activeBatchIndex].dataUrl = croppedBase64
-        setBatchImages(updatedBatch)
+    if (isDualCard) {
+      const activeCrop = activeCropSide === 'front' ? frontCompletedCrop : backCompletedCrop
+      if (!activeCrop || !activeCrop.width || !activeCrop.height) {
+        // If nothing was selected/cropped, auto-advance or close
+        if (activeCropSide === 'front' && !backCardImage) {
+          setActiveCropSide('back')
+        } else if (activeCropSide === 'back' && !frontCardImage) {
+          setActiveCropSide('front')
+        } else {
+          setShowManualCrop(false)
+        }
+        return
       }
+
+      const croppedBase64 = getCroppedImg(cropImageRef.current, activeCrop)
+      if (croppedBase64) {
+        if (activeCropSide === 'front') {
+          setFrontCardImage(croppedBase64)
+          if (!backCardImage) {
+            setActiveCropSide('back')
+          } else {
+            setShowManualCrop(false)
+          }
+        } else {
+          setBackCardImage(croppedBase64)
+          if (!frontCardImage) {
+            setActiveCropSide('front')
+          } else {
+            setShowManualCrop(false)
+          }
+        }
+      }
+    } else {
+      if (!completedCrop || !cropImageRef.current || !completedCrop.width || !completedCrop.height) {
+        setShowManualCrop(false)
+        return
+      }
+      const croppedBase64 = getCroppedImg(cropImageRef.current, completedCrop)
+      if (croppedBase64) {
+        setUploadedImage(croppedBase64)
+
+        if (batchImages.length > 0) {
+          setBatchImages(prev =>
+            prev.map((item, index) =>
+              index === activeBatchIndex ? { ...item, dataUrl: croppedBase64 } : item
+            )
+          )
+        }
+      }
+      setShowManualCrop(false)
+      setCrop(undefined)
+      setCompletedCrop(undefined)
     }
-    setShowManualCrop(false)
-    setCrop(undefined)
-    setCompletedCrop(undefined)
   }
   const [batchImages, setBatchImages] = useState<BatchImage[]>([])
   const [activeBatchIndex, setActiveBatchIndex] = useState(0)
@@ -191,6 +468,9 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
   const [isProcessingPdf, setIsProcessingPdf] = useState(false)
   const [pdfType, setPdfType] = useState<'pan' | 'aadhar'>('pan')
   const [cardLayoutMode, setCardLayoutMode] = useState<'single' | 'dual'>('dual')
+
+  const isCard = ['pan', 'aadhar', 'dl', 'cm_health', 'pm_health'].includes(photoSizeKey)
+  const isDualCard = isCard && cardLayoutMode === 'dual'
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const renderCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -334,6 +614,16 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     setActiveBatchIndex(0)
     setStep('edit')
     setShowPreview(false)
+    setFrontCardImage('')
+    setBackCardImage('')
+    setFrontSourceImage('')
+    setBackSourceImage('')
+    setFrontCrop(undefined)
+    setFrontCompletedCrop(undefined)
+    setBackCrop(undefined)
+    setBackCompletedCrop(undefined)
+    setActiveCropSide('front')
+    setHasAutoDetected(false)
   }
 
   useEffect(() => {
@@ -389,6 +679,16 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
       setUploadedImage(mapped[0].dataUrl)
       setActiveBatchIndex(batchImages.length)
       setStep('edit')
+      setFrontCardImage('')
+      setBackCardImage('')
+      setFrontSourceImage('')
+      setBackSourceImage('')
+      setFrontCrop(undefined)
+      setFrontCompletedCrop(undefined)
+      setBackCrop(undefined)
+      setBackCompletedCrop(undefined)
+      setActiveCropSide('front')
+      setHasAutoDetected(false)
     }
     setShowPreview(false)
   }
@@ -496,12 +796,16 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
 
         if (cardLayoutMode === 'dual') {
           // Slot 2 (Bottom Half - Centered)
-          pctx.drawImage(fImg, startX, 1031, cardW, cardH)
+          pctx.drawImage(bImg, startX, 1031, cardW, cardH)
         }
 
         const finalDataUrl = printCanvas.toDataURL('image/jpeg', 0.95)
         setRenderedDataUrl(finalDataUrl)
         setUploadedImage(frontDataUrl)
+        setFrontCardImage(frontDataUrl)
+        setBackCardImage(backDataUrl)
+        setFrontSourceImage(frontDataUrl)
+        setBackSourceImage(backDataUrl)
         setBatchImages([
           { id: 'pan-front', name: 'PAN Front', dataUrl: frontDataUrl },
           { id: 'pan-back', name: 'PAN Back', dataUrl: backDataUrl }
@@ -635,6 +939,10 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
       const backDataUrl = extractCardBack()
 
       setUploadedImage(frontDataUrl)
+      setFrontCardImage(frontDataUrl)
+      setBackCardImage(backDataUrl)
+      setFrontSourceImage(frontDataUrl)
+      setBackSourceImage(backDataUrl)
       setPhotoSizeKey('aadhar')
       setBatchImages([
         { id: 'aadhar-front', name: 'Aadhaar Front', dataUrl: frontDataUrl },
@@ -662,7 +970,8 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
   }
 
   useEffect(() => {
-    if (!uploadedImage) return
+    const effectiveSource = (isCard && frontCardImage) ? frontCardImage : uploadedImage
+    if (!effectiveSource) return
     let active = true
     const img = new Image()
     img.onload = () => {
@@ -682,9 +991,85 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
         setMaskedSourceNode(img)
       }
     }
-    img.src = uploadedImage
+    img.src = effectiveSource
     return () => { active = false }
-  }, [uploadedImage, aiBackgroundRemoval, aiMaskTolerance, aiEdgeRefine, tileBackgroundMode])
+  }, [uploadedImage, frontCardImage, isCard, aiBackgroundRemoval, aiMaskTolerance, aiEdgeRefine, tileBackgroundMode])
+
+  // Automatic background auto-crop on upload/load of card types
+  useEffect(() => {
+    if (!isCard || !uploadedImage || frontCardImage || isDetecting || hasAutoDetected) return
+
+    const img = new Image()
+    img.onload = async () => {
+      try {
+        setHasAutoDetected(true)
+        const result = await detectCardRegions(img)
+        if (result.front) {
+          setFrontCrop(result.front.percent)
+          const frontCropped = getCroppedImgDirect(img, result.front.natural)
+          if (frontCropped) setFrontCardImage(frontCropped)
+        }
+        if (result.back) {
+          setBackCrop(result.back.percent)
+          const backCropped = getCroppedImgDirect(img, result.back.natural)
+          if (backCropped) setBackCardImage(backCropped)
+        }
+      } catch (error) {
+        console.error('Auto-crop on load failed:', error)
+      }
+    }
+    img.src = uploadedImage
+  }, [uploadedImage, isCard, frontCardImage, isDetecting, hasAutoDetected])
+
+  // Scale percentage crops to pixel crops for ReactCrop when Manual Crop modal opens
+  useEffect(() => {
+    if (showManualCrop && cropImageRef.current) {
+      const img = cropImageRef.current
+      const updatePxCrops = () => {
+        const naturalW = img.naturalWidth
+        const naturalH = img.naturalHeight
+        const clientW = img.width
+        const clientH = img.height
+        if (naturalW && clientW) {
+          const scaleX = clientW / naturalW
+          const scaleY = clientH / naturalH
+          
+          if (frontCrop && !frontCompletedCrop) {
+            const x = ((frontCrop.x || 0) * naturalW) / 100
+            const y = ((frontCrop.y || 0) * naturalH) / 100
+            const w = ((frontCrop.width || 0) * naturalW) / 100
+            const h = ((frontCrop.height || 0) * naturalH) / 100
+            setFrontCompletedCrop({
+              unit: 'px',
+              x: x * scaleX,
+              y: y * scaleY,
+              width: w * scaleX,
+              height: h * scaleY
+            })
+          }
+          if (backCrop && !backCompletedCrop) {
+            const x = ((backCrop.x || 0) * naturalW) / 100
+            const y = ((backCrop.y || 0) * naturalH) / 100
+            const w = ((backCrop.width || 0) * naturalW) / 100
+            const h = ((backCrop.height || 0) * naturalH) / 100
+            setBackCompletedCrop({
+              unit: 'px',
+              x: x * scaleX,
+              y: y * scaleY,
+              width: w * scaleX,
+              height: h * scaleY
+            })
+          }
+        }
+      }
+      
+      if (img.complete) {
+        updatePxCrops()
+      } else {
+        img.onload = updatePxCrops
+      }
+    }
+  }, [showManualCrop, frontCrop, backCrop])
 
   useEffect(() => {
     if (step !== 'edit' && step !== 'layout') return
@@ -959,8 +1344,10 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
       const slotSources: string[] = []
 
       if (isCard && cardLayoutMode === 'dual') {
-        slotSources.push(sourceDataUrl)
-        slotSources.push(sourceDataUrl)
+        slotSources.push(frontCardImage || sourceDataUrl)
+        slotSources.push(backCardImage || sourceDataUrl)
+      } else if (isCard && cardLayoutMode === 'single') {
+        slotSources.push(frontCardImage || sourceDataUrl)
       } else if (useBatchFill) {
         const repeatPerImage = Number(layoutCount)
         for (let index = activeBatchIndex; index < batchImages.length && slotSources.length < count; index++) {
@@ -1202,7 +1589,9 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     activeBatchIndex,
     batchImages,
     cardLayoutMode,
-    cardBleed
+    cardBleed,
+    frontCardImage,
+    backCardImage
   ])
 
   const printRenderedPreview = async () => {
@@ -1467,6 +1856,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
                   </div>
                   <div style={{ marginTop: '16px', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px' }}>
                     <button className="btn-primary" style={{ ...compactButtonStyle, background: 'linear-gradient(135deg, #3d5afe 0%, #536dfe 100%)', fontWeight: 'bold', gridColumn: 'span 3', padding: '10px' }} onClick={applyClarity}>✨ Enhance Clarity (Auto)</button>
+                    <button className="btn-primary" style={{ ...compactButtonStyle, background: 'linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)', fontWeight: 'bold', gridColumn: 'span 3', padding: '10px' }} onClick={() => { if (isDualCard) { setActiveCropSide('front'); } setShowManualCrop(true); }}>✂️ Manual Crop</button>
                     <button className="btn-secondary" style={compactButtonStyle} onClick={() => applyQualityPreset('normal')}>Reset</button>
                     <button className="btn-secondary" style={compactButtonStyle} onClick={applyAutoEnhance}>Auto</button>
                     <button className="btn-secondary" style={compactButtonStyle} onClick={applyFaceClarity}>Face</button>
@@ -1596,13 +1986,27 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
                 </div>
 
                 <h3 style={{ margin: '16px 0 12px', color: 'var(--text-main)', fontSize: '16px' }}>Card Tools</h3>
-                <button
-                  className="btn-primary"
-                  style={{ padding: '12px', width: '100%', borderRadius: '8px', background: 'linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)', color: 'white', fontWeight: 'bold' }}
-                  onClick={() => setCardBleed(prev => prev > 0 ? 0 : 40)}
-                >
-                  {cardBleed > 0 ? '- Remove Bleed Border' : '+ Extend Image Outside (Bleed)'}
-                </button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <button
+                    className="btn-primary"
+                    style={{ padding: '12px', width: '100%', borderRadius: '8px', background: 'linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)', color: 'white', fontWeight: 'bold' }}
+                    onClick={() => setCardBleed(prev => prev > 0 ? 0 : 40)}
+                  >
+                    {cardBleed > 0 ? '- Remove Bleed Border' : '+ Extend Image Outside (Bleed)'}
+                  </button>
+                  {cardLayoutMode === 'dual' && (
+                    <button
+                      className="btn-primary"
+                      style={{ padding: '12px', width: '100%', borderRadius: '8px', background: 'linear-gradient(135deg, #3d5afe 0%, #536dfe 100%)', color: 'white', fontWeight: 'bold' }}
+                      onClick={() => {
+                        setActiveCropSide('front')
+                        setShowManualCrop(true)
+                      }}
+                    >
+                      ✂️ Manual Crop (Front/Back)
+                    </button>
+                  )}
+                </div>
               </div>
             )}
             {!['pan', 'aadhar', 'dl', 'cm_health', 'pm_health'].includes(photoSizeKey) && (
@@ -1669,9 +2073,86 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.9)', zIndex: 1400, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
           <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', display: 'flex', flexDirection: 'column', alignItems: 'center', maxWidth: '100%', maxHeight: '100%' }}>
             <h3 style={{ margin: '0 0 16px 0', color: '#111' }}>Manual Crop Overlay</h3>
+            {isDualCard && (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', marginBottom: '16px', width: '100%' }}>
+                <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', width: '100%', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={() => setActiveCropSide('front')}
+                    style={{
+                      padding: '8px 20px',
+                      borderRadius: '8px',
+                      border: '1px solid #ccc',
+                      background: activeCropSide === 'front' ? '#0ea5e9' : '#f3f4f6',
+                      color: activeCropSide === 'front' ? '#fff' : '#111',
+                      fontWeight: 'bold',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Front Side {frontCardImage ? '✅' : ''}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveCropSide('back')}
+                    style={{
+                      padding: '8px 20px',
+                      borderRadius: '8px',
+                      border: '1px solid #ccc',
+                      background: activeCropSide === 'back' ? '#0ea5e9' : '#f3f4f6',
+                      color: activeCropSide === 'back' ? '#fff' : '#111',
+                      fontWeight: 'bold',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Back Side {backCardImage ? '✅' : ''}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAutoDetect}
+                    disabled={isDetecting}
+                    style={{
+                      padding: '8px 20px',
+                      borderRadius: '8px',
+                      border: '1px solid #d97706',
+                      background: '#d97706',
+                      color: '#fff',
+                      fontWeight: 'bold',
+                      cursor: 'pointer',
+                      opacity: isDetecting ? 0.6 : 1
+                    }}
+                  >
+                    {isDetecting ? '🔍 Detecting...' : '🔍 Auto-Detect'}
+                  </button>
+                </div>
+                {detectionMessage && (
+                  <div style={{ fontSize: '13px', color: '#374151', fontWeight: '500', textAlign: 'center' }}>
+                    {detectionMessage}
+                  </div>
+                )}
+              </div>
+            )}
             <div style={{ overflow: 'auto', maxWidth: '90vw', maxHeight: '70vh', background: '#e0e0e0', border: '1px solid #ccc' }}>
-              <ReactCrop crop={crop} onChange={(c) => setCrop(c)} onComplete={(c) => setCompletedCrop(c)}>
-                <img ref={cropImageRef} src={uploadedImage} alt="Crop" style={{ maxWidth: '100%', maxHeight: '70vh', objectFit: 'contain' }} />
+              <ReactCrop
+                crop={isDualCard ? (activeCropSide === 'front' ? frontCrop : backCrop) : crop}
+                onChange={(c) => {
+                  if (isDualCard) {
+                    if (activeCropSide === 'front') setFrontCrop(c)
+                    else setBackCrop(c)
+                  } else {
+                    setCrop(c)
+                  }
+                }}
+                onComplete={(c) => {
+                  if (isDualCard) {
+                    if (activeCropSide === 'front') setFrontCompletedCrop(c)
+                    else setBackCompletedCrop(c)
+                  } else {
+                    setCompletedCrop(c)
+                  }
+                }}
+                aspect={isDualCard ? 85.6 / 54 : undefined}
+              >
+                <img ref={cropImageRef} src={isDualCard ? (activeCropSide === 'front' ? (frontSourceImage || uploadedImage) : (backSourceImage || uploadedImage)) : uploadedImage} alt="Crop" style={{ maxWidth: '100%', maxHeight: '70vh', objectFit: 'contain' }} />
               </ReactCrop>
             </div>
             <div style={{ display: 'flex', gap: '12px', marginTop: '20px', width: '100%', justifyContent: 'flex-end' }}>
