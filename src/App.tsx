@@ -17,6 +17,9 @@ import {
 } from './userService'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+if (!import.meta.env.VITE_API_BASE_URL && import.meta.env.PROD) {
+  console.error('[Config] VITE_API_BASE_URL is not set in this production build — wallet top-up will not work.');
+}
 
 const normalizePhoneInput = (value: string, maxDigits = 10) => value.replace(/\D/g, '').slice(0, maxDigits)
 const isValidTenDigitPhone = (value: string) => normalizePhoneInput(value).length === 10
@@ -776,6 +779,7 @@ function App() {
   const [addFundsAmount, setAddFundsAmount] = useState('500')
   // const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<'upi' | 'netbanking' | 'card' | null>(null)
   const [paymentStep, setPaymentStep] = useState(1) // 1: Amount, 2: Selection/Process, 3: Success
+  const [paymentError, setPaymentError] = useState('')
   // const [pgSubStep, setPgSubStep] = useState<string>('methods')
   // const [vpaInput, setVpaInput] = useState('')
   // const [selectedBank, setSelectedBank] = useState('')
@@ -1290,9 +1294,11 @@ function App() {
     setIsAddFundsModalOpen(true);
     setPaymentStep(1);
     setAddFundsAmount('500');
+    setPaymentError('');
   };
 
   const handleRazorpayPayment = async () => {
+    setPaymentError('');
     const amount = parseFloat(addFundsAmount);
     if (isNaN(amount) || amount <= 0) {
       alert('Please enter a valid amount');
@@ -1312,7 +1318,7 @@ function App() {
       order_id = data.order_id;
     } catch (err) {
       console.error(err);
-      alert('Failed to connect to backend. Make sure the Node server is running on port 5000.');
+      setPaymentError("We couldn't reach the payment service right now. Please try again in a moment, or contact support if this continues.");
       return;
     }
 
@@ -6623,6 +6629,13 @@ function App() {
                 <div className="progress-line"></div>
                 <div className={`progress-step ${paymentStep >= 4 ? 'active' : ''}`}>✓</div>
               </div>
+
+              {paymentError && (
+                <div className="status-banner error" style={{ borderRadius: '8px', padding: '10px 14px', marginBottom: '16px', borderBottom: 'none', border: '1px solid rgba(239, 68, 68, 0.2)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+                  <span style={{ textAlign: 'left' }}>{paymentError}</span>
+                </div>
+              )}
 
               {paymentStep === 1 && (
                 <div className="payment-step-content">
