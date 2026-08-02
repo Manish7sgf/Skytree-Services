@@ -522,7 +522,19 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
 
   const applyManualCrop = async () => {
     const effectiveSide = isDualCard ? activeCropSide : singleSideChoice
-    const activeSourceImg = isDualCard ? (fullPageSourceImage || uploadedImage) : (isCard ? (effectiveSide === 'front' ? (frontSourceImage || uploadedImage) : (backSourceImage || uploadedImage)) : uploadedImage)
+    
+    let activeSourceImg = uploadedImage
+    if (isCard) {
+      if (fullPageSourceImage) {
+        activeSourceImg = fullPageSourceImage
+      } else {
+        if (effectiveSide === 'front') {
+          activeSourceImg = frontSourceImage || batchImages[0]?.dataUrl || uploadedImage
+        } else {
+          activeSourceImg = backSourceImage || batchImages[1]?.dataUrl || batchImages[0]?.dataUrl || uploadedImage
+        }
+      }
+    }
 
     if (!activeSourceImg) {
       setShowManualCrop(false)
@@ -2630,7 +2642,19 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
                 const effectiveSide = isDualCard ? activeCropSide : singleSideChoice
                 const activeCropVal = isCard ? (effectiveSide === 'front' ? frontCrop : backCrop) : crop
                 const activeZoomVal = isCard ? (effectiveSide === 'front' ? frontZoom : backZoom) : zoom
-                const activeSourceImg = isDualCard ? (fullPageSourceImage || uploadedImage) : (isCard ? (effectiveSide === 'front' ? (frontSourceImage || uploadedImage) : (backSourceImage || uploadedImage)) : uploadedImage)
+                
+                let activeSourceImg = uploadedImage
+                if (isCard) {
+                  if (fullPageSourceImage) {
+                    activeSourceImg = fullPageSourceImage
+                  } else {
+                    if (effectiveSide === 'front') {
+                      activeSourceImg = frontSourceImage || batchImages[0]?.dataUrl || uploadedImage
+                    } else {
+                      activeSourceImg = backSourceImage || batchImages[1]?.dataUrl || batchImages[0]?.dataUrl || uploadedImage
+                    }
+                  }
+                }
 
                 const cropAspectVal = (() => {
                   if (isCard) {
