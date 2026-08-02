@@ -1,6 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import ReactCrop, { type Crop, type PixelCrop } from 'react-image-crop'
-import 'react-image-crop/dist/ReactCrop.css'
+import Cropper, { type Area } from 'react-easy-crop'
+import './PhotoStudio.css'
+import {
+  IconLock,
+  IconPassport,
+  IconCard,
+  IconIdCard,
+  IconCar,
+  IconHospital,
+  IconCheck,
+  IconWarning,
+  IconMagic,
+  IconCrop,
+  IconCircle,
+  IconX,
+  IconRotate,
+  IconPrinter,
+  IconEye,
+  IconSearch,
+  IconSparkles
+} from './Icons'
 
 type PhotoSizeKey = 'passport' | 'stamp' | 'custom' | 'pan' | 'aadhar' | 'dl' | 'cm_health' | 'pm_health'
 const PDFJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
@@ -21,7 +40,7 @@ interface PhotoEditorState {
 
 interface PhotoStudioProps {
   moduleKey: string
-  onBack: () => void
+  onBack?: () => void
 }
 
 interface BatchImage {
@@ -86,50 +105,80 @@ const readImageAsDataUrl = (file: File): Promise<string> =>
     reader.readAsDataURL(file)
   })
 
-const getCroppedImg = (image: HTMLImageElement, completedCrop: PixelCrop): string | null => {
-  if (!completedCrop || !completedCrop.width || !completedCrop.height) {
+const createImage = (url: string): Promise<HTMLImageElement> =>
+  new Promise((resolve, reject) => {
+    const image = new Image()
+    image.addEventListener('load', () => resolve(image))
+    image.addEventListener('error', (error) => reject(error))
+    image.src = url
+  })
+
+const getCroppedImgEasy = async (imageSrc: string, pixelCrop: Area): Promise<string | null> => {
+  try {
+    const image = await createImage(imageSrc)
+    const canvas = document.createElement('canvas')
+    canvas.width = pixelCrop.width
+    canvas.height = pixelCrop.height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(
+      image,
+      pixelCrop.x,
+      pixelCrop.y,
+      pixelCrop.width,
+      pixelCrop.height,
+      0,
+      0,
+      pixelCrop.width,
+      pixelCrop.height
+    )
+    return canvas.toDataURL('image/png', 1)
+  } catch (e) {
+    console.error(e)
     return null
   }
-  const canvas = document.createElement('canvas')
-  const scaleX = image.naturalWidth / image.width
-  const scaleY = image.naturalHeight / image.height
-  canvas.width = completedCrop.width * scaleX
-  canvas.height = completedCrop.height * scaleY
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return null
-  ctx.drawImage(
-    image,
-    completedCrop.x * scaleX,
-    completedCrop.y * scaleY,
-    completedCrop.width * scaleX,
-    completedCrop.height * scaleY,
-    0,
-    0,
-    completedCrop.width * scaleX,
-    completedCrop.height * scaleY
-  )
-  return canvas.toDataURL('image/png', 1)
 }
 
-const getCroppedImgDirect = (image: HTMLImageElement, naturalBox: { x: number; y: number; width: number; height: number }): string | null => {
-  const canvas = document.createElement('canvas')
-  canvas.width = naturalBox.width
-  canvas.height = naturalBox.height
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return null
-  ctx.drawImage(
-    image,
-    naturalBox.x,
-    naturalBox.y,
-    naturalBox.width,
-    naturalBox.height,
-    0,
-    0,
-    naturalBox.width,
-    naturalBox.height
-  )
-  return canvas.toDataURL('image/png', 1)
+// Card-specific crop: upscales the selected region to full 300 DPI card resolution
+// (85.6 mm × 54 mm @ 300 DPI = same as the PDF pipeline target size)
+// This ensures manual crops are as sharp as PDF-extracted cards.
+const CARD_OUT_W = Math.round((85.6 / 25.4) * DPI) // ≈1011 px
+const CARD_OUT_H = Math.round((54 / 25.4) * DPI)   // ≈638 px
+
+const EDGE_INSET_PX = 3 // Safety margin in source px to eliminate white border bleed
+
+const getCroppedImgCardEasy = async (imageSrc: string, pixelCrop: Area): Promise<string | null> => {
+  try {
+    const image = await createImage(imageSrc)
+    const canvas = document.createElement('canvas')
+    canvas.width = CARD_OUT_W
+    canvas.height = CARD_OUT_H
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+
+    // No EDGE_INSET_PX trim here: pixelCrop comes from react-easy-crop's onCropComplete,
+    // which is already the exact region the user dragged/zoomed to fit the card —
+    // there's no guessed-box margin to correct for, unlike the auto-detect/PDF paths
+    // below which still apply EDGE_INSET_PX since those start from a ratio guess.
+    const ix = pixelCrop.x
+    const iy = pixelCrop.y
+    const iw = Math.max(1, pixelCrop.width)
+    const ih = Math.max(1, pixelCrop.height)
+
+    // Draw the source crop region scaled up to the full card output size
+    ctx.drawImage(image, ix, iy, iw, ih, 0, 0, CARD_OUT_W, CARD_OUT_H)
+    return canvas.toDataURL('image/png', 1)
+  } catch (e) {
+    console.error(e)
+    return null
+  }
 }
+
+
 
 let cvInstance: any = null
 
@@ -157,17 +206,19 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
 
   // Manual Crop
   const [showManualCrop, setShowManualCrop] = useState(false)
-  const [crop, setCrop] = useState<Crop>()
-  const [completedCrop, setCompletedCrop] = useState<PixelCrop>()
-  const cropImageRef = useRef<HTMLImageElement>(null)
+  const [crop, setCrop] = useState<{ x: number, y: number }>({ x: 0, y: 0 })
+  const [zoom, setZoom] = useState(1)
+  const [completedCrop, setCompletedCrop] = useState<Area | null>(null)
 
   // Card specific crops and images
   const [frontCardImage, setFrontCardImage] = useState<string>('')
   const [backCardImage, setBackCardImage] = useState<string>('')
-  const [frontCrop, setFrontCrop] = useState<Crop>()
-  const [frontCompletedCrop, setFrontCompletedCrop] = useState<PixelCrop>()
-  const [backCrop, setBackCrop] = useState<Crop>()
-  const [backCompletedCrop, setBackCompletedCrop] = useState<PixelCrop>()
+  const [frontCrop, setFrontCrop] = useState<{ x: number, y: number }>({ x: 0, y: 0 })
+  const [frontZoom, setFrontZoom] = useState(1)
+  const [frontCompletedCrop, setFrontCompletedCrop] = useState<Area | null>(null)
+  const [backCrop, setBackCrop] = useState<{ x: number, y: number }>({ x: 0, y: 0 })
+  const [backZoom, setBackZoom] = useState(1)
+  const [backCompletedCrop, setBackCompletedCrop] = useState<Area | null>(null)
   const [activeCropSide, setActiveCropSide] = useState<'front' | 'back'>('front')
   const [frontSourceImage, setFrontSourceImage] = useState<string>('')
   const [backSourceImage, setBackSourceImage] = useState<string>('')
@@ -176,10 +227,11 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
   const [hasAutoDetected, setHasAutoDetected] = useState(false)
 
   const detectCardRegions = async (
-    imageElement: HTMLImageElement
+    imageElement: HTMLImageElement,
+    isPdfRender: boolean = false
   ): Promise<{
-    front: { percent: Crop; pixel: PixelCrop; natural: { x: number; y: number; width: number; height: number } } | null;
-    back: { percent: Crop; pixel: PixelCrop; natural: { x: number; y: number; width: number; height: number } } | null;
+    front: { percent: any; pixel: Area; natural: { x: number; y: number; width: number; height: number } } | null;
+    back: { percent: any; pixel: Area; natural: { x: number; y: number; width: number; height: number } } | null;
   }> => {
     const cv = await getCv()
     const src = cv.imread(imageElement)
@@ -191,19 +243,27 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     const scaleY = clientH / naturalH
 
     const gray = new cv.Mat()
-    const blurred = new cv.Mat()
     const edges = new cv.Mat()
+    let blurred: any = null
 
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0)
-    const ksize = new cv.Size(5, 5)
-    cv.GaussianBlur(gray, blurred, ksize, 0, 0, cv.BORDER_DEFAULT)
-    cv.Canny(blurred, edges, 50, 150, 3, false)
+    if (isPdfRender) {
+      cv.threshold(gray, edges, 248, 255, cv.THRESH_BINARY_INV)
+    } else {
+      blurred = new cv.Mat()
+      const ksize = new cv.Size(5, 5)
+      cv.GaussianBlur(gray, blurred, ksize, 0, 0, cv.BORDER_DEFAULT)
+      cv.Canny(blurred, edges, 50, 150, 3, false)
+    }
 
     const contours = new cv.MatVector()
     const hierarchy = new cv.Mat()
     cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
 
     const candidates: Array<{ x: number; y: number; width: number; height: number; area: number }> = []
+
+    const CR80_RATIO = 85.6 / 54 // 1.5852
+    const RATIO_TOLERANCE = 0.08
 
     for (let i = 0; i < contours.size(); ++i) {
       const cnt = contours.get(i)
@@ -239,21 +299,14 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
         continue
       }
 
-      // 3. RECTANGULARITY CHECK: Reject if extent (area fill ratio) < 0.7
-      const extent = area / rectArea
-      if (extent < 0.7) {
-        cnt.delete()
-        continue
-      }
-
-      const peri = cv.arcLength(cnt, true)
       const approx = new cv.Mat()
+      const peri = cv.arcLength(cnt, true)
       cv.approxPolyDP(cnt, approx, 0.02 * peri, true)
       const corners = approx.rows
 
       const aspect = rect.width / rect.height
 
-      const isLandscape = aspect >= 1.2 && aspect <= 2.0
+      const isLandscape = Math.abs(aspect - CR80_RATIO) <= RATIO_TOLERANCE
       const isPortrait = aspect >= 0.5 && aspect <= 0.83
 
       if (corners >= 4 && corners <= 8 && (isLandscape || isPortrait)) {
@@ -274,26 +327,29 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     hierarchy.delete()
     src.delete()
     gray.delete()
-    blurred.delete()
+    if (blurred) blurred.delete()
     edges.delete()
 
-    // Sort by area descending
-    candidates.sort((a, b) => b.area - a.area)
+    // Sort by ratio closeness first, area as tiebreak
+    candidates.sort((a, b) => {
+      const ra = Math.abs(a.width / a.height - CR80_RATIO)
+      const rb = Math.abs(b.width / b.height - CR80_RATIO)
+      if (Math.abs(ra - rb) > 0.02) return ra - rb
+      return b.area - a.area
+    })
     const top2 = candidates.slice(0, 2)
 
-    let frontResult: { percent: Crop; pixel: PixelCrop; natural: { x: number; y: number; width: number; height: number } } | null = null
-    let backResult: { percent: Crop; pixel: PixelCrop; natural: { x: number; y: number; width: number; height: number } } | null = null
+    let frontResult: { percent: any; pixel: Area; natural: { x: number; y: number; width: number; height: number } } | null = null
+    let backResult: { percent: any; pixel: Area; natural: { x: number; y: number; width: number; height: number } } | null = null
 
     const makeCropPair = (box: { x: number; y: number; width: number; height: number }) => {
       const percent = {
-        unit: '%' as const,
         x: (box.x / naturalW) * 100,
         y: (box.y / naturalH) * 100,
         width: (box.width / naturalW) * 100,
         height: (box.height / naturalH) * 100
       }
       const pixel = {
-        unit: 'px' as const,
         x: box.x * scaleX,
         y: box.y * scaleY,
         width: box.width * scaleX,
@@ -303,8 +359,14 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     }
 
     if (top2.length === 2) {
-      // Sort topmost first
-      top2.sort((a, b) => a.y - b.y)
+      const [a, b] = top2
+      const dx = Math.abs(a.x - b.x)
+      const dy = Math.abs(a.y - b.y)
+      if (dx > dy) {
+        top2.sort((p, q) => p.x - q.x) // side-by-side → left = front
+      } else {
+        top2.sort((p, q) => p.y - q.y) // stacked → top = front
+      }
       frontResult = makeCropPair(top2[0])
       backResult = makeCropPair(top2[1])
     } else if (top2.length === 1) {
@@ -320,82 +382,187 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     return { front: frontResult, back: backResult }
   }
 
+  const extractCardFallbackFromImage = (img: HTMLImageElement): { front: string; back: string } | null => {
+    const nw = img.naturalWidth || img.width
+    const nh = img.naturalHeight || img.height
+    if (!nw || !nh) return null
+
+    const aspect = nw / nh
+
+    // Standard e-Aadhaar or PAN document sheet (tall portrait document aspect < 1.25)
+    if ((photoSizeKey === 'aadhar' || photoSizeKey === 'pan') && aspect < 1.25) {
+      const isPan = photoSizeKey === 'pan'
+
+      const outW = isPan ? Math.round((85.6 / 25.4) * DPI) : Math.round((88.6 / 25.4) * DPI)
+      const outH = isPan ? Math.round((54 / 25.4) * DPI) : Math.round((58 / 25.4) * DPI)
+
+      // Measured ratios from reference e-PAN sheet scan (848x1200px)
+      const frontCardW = isPan ? (nw * (335 / 848)) : (nw * (88.6 / 210.0))
+      const backCardW = isPan ? (nw * (335 / 848)) : (nw * (88.6 / 210.0))
+      const cardH = isPan ? (nh * (215 / 1200)) : (nh * (58.0 / 297.0))
+      const sy = isPan ? (nh * (940 / 1200)) : Math.max(0, nh - cardH - (nh * 0.015))
+      const frontSx = isPan ? (nw * (53 / 848)) : Math.max(0, nw * 0.012)
+      const backSx = isPan ? (nw * (458 / 848)) : Math.max(0, nw * 0.502)
+
+      const insetFrontCardW = Math.max(1, frontCardW - EDGE_INSET_PX * 2)
+      const insetBackCardW = Math.max(1, backCardW - EDGE_INSET_PX * 2)
+      const insetCardH = Math.max(1, cardH - EDGE_INSET_PX * 2)
+      const insetSy = sy + EDGE_INSET_PX
+      const insetFrontSx = frontSx + EDGE_INSET_PX
+      const insetBackSx = backSx + EDGE_INSET_PX
+
+      const canvasF = document.createElement('canvas')
+      canvasF.width = outW
+      canvasF.height = outH
+      const ctxF = canvasF.getContext('2d')
+      if (ctxF) {
+        ctxF.imageSmoothingEnabled = true
+        ctxF.imageSmoothingQuality = 'high'
+        ctxF.drawImage(img, insetFrontSx, insetSy, insetFrontCardW, insetCardH, 0, 0, outW, outH)
+      }
+
+      const canvasB = document.createElement('canvas')
+      canvasB.width = outW
+      canvasB.height = outH
+      const ctxB = canvasB.getContext('2d')
+      if (ctxB) {
+        ctxB.imageSmoothingEnabled = true
+        ctxB.imageSmoothingQuality = 'high'
+        ctxB.drawImage(img, insetBackSx, insetSy, insetBackCardW, insetCardH, 0, 0, outW, outH)
+      }
+
+      return {
+        front: canvasF.toDataURL('image/png'),
+        back: canvasB.toDataURL('image/png')
+      }
+    }
+    return null
+  }
+
   const handleAutoDetect = async () => {
-    if (!cropImageRef.current) return
+    const activeSourceImg = fullPageSourceImage || uploadedImage
+    if (!activeSourceImg) return
     setIsDetecting(true)
     setDetectionMessage('')
     try {
-      const result = await detectCardRegions(cropImageRef.current)
+      const img = await createImage(activeSourceImg)
+      const isPdf = !!fullPageSourceImage
+      const result = await detectCardRegions(img, isPdf)
+      let croppedFrontUrl = ''
+      let croppedBackUrl = ''
+
       if (result.front) {
-        setFrontCrop(result.front.percent)
-        setFrontCompletedCrop(result.front.pixel)
-      }
-      if (result.back) {
-        setBackCrop(result.back.percent)
-        setBackCompletedCrop(result.back.pixel)
+        croppedFrontUrl = await getCroppedImgCardEasy(activeSourceImg, result.front.pixel) || ''
       }
 
-      if (result.front && result.back) {
+      if (result.back) {
+        croppedBackUrl = await getCroppedImgCardEasy(activeSourceImg, result.back.pixel) || ''
+      }
+
+      // Fallback: If OpenCV didn't detect both cards, use layout extraction for Aadhaar/PAN image sheets
+      if (!croppedFrontUrl || !croppedBackUrl) {
+        const fallback = extractCardFallbackFromImage(img)
+        if (fallback) {
+          if (!croppedFrontUrl) croppedFrontUrl = fallback.front
+          if (!croppedBackUrl) croppedBackUrl = fallback.back
+        }
+      }
+
+      if (croppedFrontUrl) {
+        setFrontCardImage(croppedFrontUrl)
+        setFrontSourceImage(croppedFrontUrl)
+      }
+
+      if (croppedBackUrl) {
+        setBackCardImage(croppedBackUrl)
+        setBackSourceImage(croppedBackUrl)
+      }
+
+      const newBatch: BatchImage[] = []
+      if (croppedFrontUrl) {
+        newBatch.push({
+          id: 'card-front',
+          name: `${photoSizeKey.toUpperCase()} Front`,
+          dataUrl: croppedFrontUrl
+        })
+      }
+      if (croppedBackUrl) {
+        newBatch.push({
+          id: 'card-back',
+          name: `${photoSizeKey.toUpperCase()} Back`,
+          dataUrl: croppedBackUrl
+        })
+      }
+      if (newBatch.length > 0) {
+        setBatchImages(newBatch)
+      }
+
+      if (croppedFrontUrl && croppedBackUrl) {
         setDetectionMessage('✅ Auto-detected both card regions successfully!')
-      } else if (result.front) {
-        setDetectionMessage('⚠️ Auto-detected Front Side only. Please crop Back Side manually.')
-      } else if (result.back) {
-        setDetectionMessage('⚠️ Auto-detected Back Side only. Please crop Front Side manually.')
+      } else if (croppedFrontUrl) {
+        setDetectionMessage('⚠️ Auto-detected Front Side. Use Manual Crop for Back Side if needed.')
       } else {
-        setDetectionMessage('❌ Could not detect either side. Please crop manually.')
+        setDetectionMessage('ℹ️ Using uploaded photo. Use Manual Crop to select exact card regions if needed.')
+        if (!frontCardImage && uploadedImage) {
+          setFrontCardImage(uploadedImage)
+          setFrontSourceImage(uploadedImage)
+        }
       }
     } catch (error) {
       console.error('Detection error:', error)
-      setDetectionMessage('❌ Auto-detection failed. Please crop manually.')
+      setDetectionMessage('❌ Auto-detection error. Using full uploaded photo.')
+      if (!frontCardImage && uploadedImage) {
+        setFrontCardImage(uploadedImage)
+        setFrontSourceImage(uploadedImage)
+      }
     } finally {
       setIsDetecting(false)
     }
   }
 
-  const applyManualCrop = () => {
-    if (!cropImageRef.current) {
+  const applyManualCrop = async () => {
+    const effectiveSide = isDualCard ? activeCropSide : singleSideChoice
+    const activeSourceImg = isDualCard ? (fullPageSourceImage || uploadedImage) : (isCard ? (effectiveSide === 'front' ? (frontSourceImage || uploadedImage) : (backSourceImage || uploadedImage)) : uploadedImage)
+
+    if (!activeSourceImg) {
       setShowManualCrop(false)
       return
     }
 
-    if (isDualCard) {
-      const activeCrop = activeCropSide === 'front' ? frontCompletedCrop : backCompletedCrop
+    if (isCard) {
+      const activeSide = cardLayoutMode === 'dual' ? activeCropSide : singleSideChoice
+      const activeCrop = activeSide === 'front' ? frontCompletedCrop : backCompletedCrop
       if (!activeCrop || !activeCrop.width || !activeCrop.height) {
         // If nothing was selected/cropped, auto-advance or close
-        if (activeCropSide === 'front' && !backCardImage) {
+        if (cardLayoutMode === 'dual' && activeSide === 'front') {
           setActiveCropSide('back')
-        } else if (activeCropSide === 'back' && !frontCardImage) {
-          setActiveCropSide('front')
         } else {
           setShowManualCrop(false)
         }
         return
       }
 
-      const croppedBase64 = getCroppedImg(cropImageRef.current, activeCrop)
+      // Use card-specific crop that upscales to 300 DPI card resolution (same as PDF pipeline)
+      const croppedBase64 = await getCroppedImgCardEasy(activeSourceImg, activeCrop)
       if (croppedBase64) {
-        if (activeCropSide === 'front') {
+        if (activeSide === 'front') {
           setFrontCardImage(croppedBase64)
-          if (!backCardImage) {
+          if (cardLayoutMode === 'dual') {
             setActiveCropSide('back')
           } else {
             setShowManualCrop(false)
           }
         } else {
           setBackCardImage(croppedBase64)
-          if (!frontCardImage) {
-            setActiveCropSide('front')
-          } else {
-            setShowManualCrop(false)
-          }
+          setShowManualCrop(false)
         }
       }
     } else {
-      if (!completedCrop || !cropImageRef.current || !completedCrop.width || !completedCrop.height) {
+      if (!completedCrop || !completedCrop.width || !completedCrop.height) {
         setShowManualCrop(false)
         return
       }
-      const croppedBase64 = getCroppedImg(cropImageRef.current, completedCrop)
+      const croppedBase64 = await getCroppedImgEasy(activeSourceImg, completedCrop)
       if (croppedBase64) {
         setUploadedImage(croppedBase64)
 
@@ -408,10 +575,11 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
         }
       }
       setShowManualCrop(false)
-      setCrop(undefined)
-      setCompletedCrop(undefined)
+      setCrop({ x: 0, y: 0 })
+      setCompletedCrop(null)
     }
   }
+
   const [batchImages, setBatchImages] = useState<BatchImage[]>([])
   const [activeBatchIndex, setActiveBatchIndex] = useState(0)
   const [cardBleed, setCardBleed] = useState(0)
@@ -434,7 +602,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
   const [photoBorderWidth, setPhotoBorderWidth] = useState(0)
   const [photoBorderColor, setPhotoBorderColor] = useState('#ffffff')
 
-  const [cropZoom, setCropZoom] = useState(1.15)
+  const [cropZoom, setCropZoom] = useState(1.0)
   const [offsetX, setOffsetX] = useState(0)
   const [offsetY, setOffsetY] = useState(0)
   const [headAlign, setHeadAlign] = useState(45)
@@ -467,38 +635,54 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
   const [pendingPdfFile, setPendingPdfFile] = useState<File | null>(null)
   const [isProcessingPdf, setIsProcessingPdf] = useState(false)
   const [pdfType, setPdfType] = useState<'pan' | 'aadhar'>('pan')
-  const [cardLayoutMode, setCardLayoutMode] = useState<'single' | 'dual'>('dual')
+  const [cardLayoutMode, setCardLayoutMode] = useState<'single' | 'dual' | 'duplicate'>('dual')
+  const [singleSideChoice, setSingleSideChoice] = useState<'front' | 'back'>('front')
+  const [editorActiveSide, setEditorActiveSide] = useState<'front' | 'back'>('front')
+  const [fullPageSourceImage, setFullPageSourceImage] = useState('')
+  const [cropAspectMode, setCropAspectMode] = useState<'free' | 'original' | 'target'>('original')
+  const [originalImageAspect, setOriginalImageAspect] = useState<number | undefined>(undefined)
+
+  const scrollToCropSide = (side: 'front' | 'back') => {
+    setActiveCropSide(side)
+  }
+
+  useEffect(() => {
+    if (showManualCrop) {
+      setCropAspectMode('original')
+      if (isDualCard) {
+        if (frontCrop.x === 0 && frontCrop.y === 0) {
+          // Defaults handled by cropper initial positioning
+        }
+      }
+      // Detect natural aspect ratio of the source image
+      const effectiveSide = isDualCard ? activeCropSide : singleSideChoice
+      const src = isCard
+        ? (effectiveSide === 'front' ? (frontSourceImage || uploadedImage) : (backSourceImage || uploadedImage))
+        : uploadedImage
+      if (src) {
+        const tempImg = new Image()
+        tempImg.onload = () => {
+          if (tempImg.naturalWidth && tempImg.naturalHeight) {
+            setOriginalImageAspect(tempImg.naturalWidth / tempImg.naturalHeight)
+          }
+        }
+        tempImg.src = src
+      }
+    }
+  }, [showManualCrop, activeCropSide, singleSideChoice])
 
   const isCard = ['pan', 'aadhar', 'dl', 'cm_health', 'pm_health'].includes(photoSizeKey)
   const isDualCard = isCard && cardLayoutMode === 'dual'
+
+  // Auto-disable background removal when switched to a card type (not applicable for cards)
+  useEffect(() => {
+    if (isCard) setAiBackgroundRemoval(false)
+  }, [isCard])
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const renderCanvasRef = useRef<HTMLCanvasElement>(null)
 
   const templateKey = `${moduleKey}_photo_studio_template`
-  const compactButtonStyle: React.CSSProperties = {
-    padding: '6px 10px',
-    fontSize: '11px',
-    borderRadius: '6px',
-  }
-
-  const documentButtonStyle: React.CSSProperties = {
-    padding: '24px 16px',
-    borderRadius: '20px',
-    background: 'linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)',
-    border: 'none',
-    boxShadow: '0 12px 30px rgba(14, 165, 233, 0.4)',
-    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '12px',
-    color: 'white',
-    textShadow: '0 2px 4px rgba(0,0,0,0.2)',
-    cursor: 'pointer',
-    width: '100%'
-  }
 
   useEffect(() => {
     try {
@@ -597,6 +781,35 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     setPhotoEditor((prev) => ({ ...prev, hueRotation: -8, saturation: 104 }))
   }
 
+  // Reset all editor state when a new file is uploaded
+  const resetEditorState = () => {
+    setFrontCardImage('')
+    setBackCardImage('')
+    setFrontSourceImage('')
+    setBackSourceImage('')
+    setCrop({ x: 0, y: 0 })
+    setZoom(1)
+    setCompletedCrop(null)
+    setFrontCrop({ x: 0, y: 0 })
+    setFrontZoom(1)
+    setFrontCompletedCrop(null)
+    setBackCrop({ x: 0, y: 0 })
+    setBackZoom(1)
+    setBackCompletedCrop(null)
+    setActiveCropSide('front')
+    setHasAutoDetected(false)
+    setMaskedSourceNode(null)
+    setFullPageSourceImage('')
+    setPhotoEditor(defaultEditor)
+    setCardBleed(0)
+    setTileBackgroundMode('white')
+    setTileCustomBackgroundColor('#ffffff')
+    setCropZoom(1.0)
+    setOffsetX(0)
+    setOffsetY(0)
+    setHeadAlign(45)
+  }
+
   // Paste-from-clipboard handler — fires when user presses Ctrl+V on the upload screen
   const handlePasteForBtn = async (key: PhotoSizeKey, item: DataTransferItem) => {
     const file = item.getAsFile()
@@ -610,20 +823,12 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     setPhotoSizeKey(key)
     if (key === 'aadhar') setPdfType('aadhar')
     setBatchImages([batchItem])
+    resetEditorState()
     setUploadedImage(dataUrl)
     setActiveBatchIndex(0)
+    setEditorActiveSide('front')
     setStep('edit')
     setShowPreview(false)
-    setFrontCardImage('')
-    setBackCardImage('')
-    setFrontSourceImage('')
-    setBackSourceImage('')
-    setFrontCrop(undefined)
-    setFrontCompletedCrop(undefined)
-    setBackCrop(undefined)
-    setBackCompletedCrop(undefined)
-    setActiveCropSide('front')
-    setHasAutoDetected(false)
   }
 
   useEffect(() => {
@@ -639,26 +844,64 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     }
     window.addEventListener('paste', onPaste)
     return () => window.removeEventListener('paste', onPaste)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, hoveredBtn])
+
+  const checkAndProcessPdf = async (file: File, type: 'pan' | 'aadhar') => {
+    setIsProcessingPdf(true)
+    setPendingPdfFile(file)
+    setPdfType(type)
+    try {
+      if (!(window as any).pdfjsLib) {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement('script')
+          script.src = PDFJS_URL
+          script.onload = resolve
+          script.onerror = reject
+          document.head.appendChild(script)
+        })
+      }
+      const pdfjsLib = (window as any).pdfjsLib
+      pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL
+
+      const arrayBuffer = await file.arrayBuffer()
+      let isEncrypted = false
+      try {
+        await pdfjsLib.getDocument({ data: arrayBuffer, password: '' }).promise
+      } catch (err: any) {
+        if (err.name === 'PasswordException' || err.code === 1 || err.message?.includes('password')) {
+          isEncrypted = true
+        }
+      }
+
+      if (isEncrypted) {
+        // PDF is encrypted / password protected! Prompt user for password!
+        setShowPasswordPrompt(true)
+        setIsProcessingPdf(false)
+      } else {
+        // PDF is UNENCRYPTED! Process immediately with empty password!
+        if (type === 'aadhar') {
+          await processAadhaarPdf('', file)
+        } else {
+          await processPanPdf('', file)
+        }
+      }
+    } catch (err) {
+      console.error('PDF check error:', err)
+      setShowPasswordPrompt(true)
+      setIsProcessingPdf(false)
+    }
+  }
 
   const handleUploadMany = async (files: File[]) => {
     if (!files.length) return
 
     const pdfFile = files.find(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))
     if (pdfFile) {
-      if (photoSizeKey === 'aadhar') {
-        console.log('PDF detected, starting Aadhaar workflow...')
-        setPdfType('aadhar')
-        setPendingPdfFile(pdfFile)
-        setShowPasswordPrompt(true)
-      } else {
-        console.log('PDF detected, starting PAN workflow...')
-        setPdfType('pan')
-        setPhotoSizeKey('pan')
-        setPendingPdfFile(pdfFile)
-        setShowPasswordPrompt(true)
-      }
+      const isAadhaar = photoSizeKey === 'aadhar'
+      const type = isAadhaar ? 'aadhar' : 'pan'
+      if (!isAadhaar) setPhotoSizeKey('pan')
+      checkAndProcessPdf(pdfFile, type)
       return
     }
 
@@ -675,26 +918,24 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     })))
 
     if (mapped.length > 0) {
-      setBatchImages((prev) => [...prev, ...mapped])
+      // Full reset — clear all previous batch images before loading the new ones
+      setBatchImages(mapped)
+      resetEditorState()
       setUploadedImage(mapped[0].dataUrl)
-      setActiveBatchIndex(batchImages.length)
+      setActiveBatchIndex(0)
+      setEditorActiveSide('front')
       setStep('edit')
-      setFrontCardImage('')
-      setBackCardImage('')
-      setFrontSourceImage('')
-      setBackSourceImage('')
-      setFrontCrop(undefined)
-      setFrontCompletedCrop(undefined)
-      setBackCrop(undefined)
-      setBackCompletedCrop(undefined)
-      setActiveCropSide('front')
-      setHasAutoDetected(false)
+      if (isCard) {
+        setFrontCardImage(mapped[0].dataUrl)
+        setFrontSourceImage(mapped[0].dataUrl)
+      }
     }
     setShowPreview(false)
   }
 
-  const processPanPdf = async (password: string) => {
-    if (!pendingPdfFile) return
+  const processPanPdf = async (password: string, fileOverride?: File) => {
+    const targetFile = fileOverride || pendingPdfFile
+    if (!targetFile) return
     setIsProcessingPdf(true)
     setShowPasswordPrompt(false)
 
@@ -711,7 +952,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
       const pdfjsLib = (window as any).pdfjsLib
       pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL
 
-      const arrayBuffer = await pendingPdfFile.arrayBuffer()
+      const arrayBuffer = await targetFile.arrayBuffer()
       let pdfDoc
       try {
         pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer, password }).promise
@@ -735,22 +976,47 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
 
       await page.render({ canvasContext: ctx, viewport }).promise
 
-      const cardW = Math.round((85.6 / 25.4) * DPI) // Exact CR-80 Width
-      const cardH = Math.round((54 / 25.4) * DPI)   // Exact CR-80 Height
+      // Capture the full rendered page for the fallback "crop from full page" button
+      setFullPageSourceImage(canvas.toDataURL('image/png'))
 
-      const extractRegion = (x: number, y: number) => {
+      const cardW = Math.round((85.6 / 25.4) * DPI) // Target CR-80 Width (1011 px @ 300 DPI)
+      const cardH = Math.round((54 / 25.4) * DPI)   // Target CR-80 Height (638 px @ 300 DPI)
+
+      // Physical A4 PDF page dimensions (210mm x 297mm)
+      const pxPerMm = viewport.width / 210.0
+
+      // Source rectangle dimensions on rendered PDF canvas (in px)
+      const frontSrcW = 83.2 * pxPerMm
+      const backSrcW = 83.2 * pxPerMm
+      const srcH = 54.0 * pxPerMm
+
+      // Physical PAN card positions on standard A4 e-PAN PDFs (in mm)
+      const sy_px = (297.0 - 10.5 - 54.0) * pxPerMm // Bottom region (232.5mm from top)
+      const frontSx_px = 14.2 * pxPerMm              // 14.2mm from left
+      const backSx_px = 112.5 * pxPerMm              // 112.5mm from left
+
+      const extractRegion = (sx: number, sw: number, sy: number) => {
         const temp = document.createElement('canvas')
         temp.width = cardW
         temp.height = cardH
         const tctx = temp.getContext('2d')
         if (tctx) {
-          tctx.drawImage(canvas, x, y, cardW, cardH, 0, 0, cardW, cardH)
+          tctx.imageSmoothingEnabled = true
+          tctx.imageSmoothingQuality = 'high'
+          tctx.drawImage(
+            canvas,
+            sx + EDGE_INSET_PX,
+            sy + EDGE_INSET_PX,
+            Math.max(1, sw - EDGE_INSET_PX * 2),
+            Math.max(1, srcH - EDGE_INSET_PX * 2),
+            0, 0, cardW, cardH
+          )
         }
         return temp.toDataURL('image/png')
       }
 
-      const frontDataUrl = extractRegion(viewport.width * 0.05, viewport.height * 0.78)
-      const backDataUrl = extractRegion(viewport.width * 0.52, viewport.height * 0.78)
+      const frontDataUrl = extractRegion(frontSx_px, frontSrcW, sy_px)
+      const backDataUrl = extractRegion(backSx_px, backSrcW, sy_px)
 
       const printCanvas = document.createElement('canvas')
       printCanvas.width = 1200 // 4 inches at 300 DPI
@@ -801,6 +1067,8 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
 
         const finalDataUrl = printCanvas.toDataURL('image/jpeg', 0.95)
         setRenderedDataUrl(finalDataUrl)
+        
+        resetEditorState()
         setUploadedImage(frontDataUrl)
         setFrontCardImage(frontDataUrl)
         setBackCardImage(backDataUrl)
@@ -824,8 +1092,9 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     }
   }
 
-  const processAadhaarPdf = async (password: string) => {
-    if (!pendingPdfFile) return
+  const processAadhaarPdf = async (password: string, fileOverride?: File) => {
+    const targetFile = fileOverride || pendingPdfFile
+    if (!targetFile) return
     setIsProcessingPdf(true)
     setShowPasswordPrompt(false)
 
@@ -842,7 +1111,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
       const pdfjsLib = (window as any).pdfjsLib
       pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL
 
-      const arrayBuffer = await pendingPdfFile.arrayBuffer()
+      const arrayBuffer = await targetFile.arrayBuffer()
       let pdfDoc
       try {
         pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer, password }).promise
@@ -866,13 +1135,13 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
       if (!pdfCtx) return
       await page.render({ canvasContext: pdfCtx, viewport }).promise
 
+      // Capture the full rendered page for the fallback "crop from full page" button
+      setFullPageSourceImage(pdfCanvas.toDataURL('image/png'))
+
       // Aadhaar card: 88.6mm × 58mm
       const aadharW = Math.round((88.6 / 25.4) * DPI)
       const aadharH = Math.round((58 / 25.4) * DPI)
 
-      // The e-Aadhaar PDF is A4 (210mm × 297mm).
-      // Crop instructions: trim 1.4cm from left & right, 3.1cm from bottom.
-      // The two cards (front & back) sit side-by-side in the lower portion of the page.
       const pageWidthMm = 210
 
       const pxPerMm = viewport.width / pageWidthMm
@@ -884,14 +1153,14 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
       const usableW = viewport.width - leftTrimPx - rightTrimPx
       const usableH = viewport.height - bottomTrimPx
 
-      // Each card occupies roughly half the usable width side-by-side
       const halfW = usableW / 2
       const cardHeightOnPage = (58 / 25.4) * 72 * scale  // card height in PDF canvas px
       const sy = usableH - cardHeightOnPage
 
-      // FRONT card: extra fine-tune — trim 1mm from right edge, 2mm from top
       const frontExtraRight = 2 * pxPerMm
       const frontExtraTop = 2 * pxPerMm
+      const extraBottom = 0.3 * pxPerMm
+
       const extractCardFront = () => {
         const temp = document.createElement('canvas')
         temp.width = aadharW
@@ -902,17 +1171,16 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
           tctx.imageSmoothingQuality = 'high'
           tctx.drawImage(
             pdfCanvas,
-            leftTrimPx,                               // x start
-            Math.max(0, sy + frontExtraTop),          // y start (+2mm down)
-            halfW - frontExtraRight,                  // source width (-1mm from right)
-            cardHeightOnPage - frontExtraTop,         // source height (cropped top)
+            leftTrimPx,
+            Math.max(0, sy + frontExtraTop),
+            halfW - frontExtraRight,
+            cardHeightOnPage - frontExtraTop - extraBottom,
             0, 0, aadharW, aadharH
           )
         }
         return temp.toDataURL('image/png')
       }
 
-      // BACK card: extra fine-tune — trim 2mm from left edge, 2mm from top
       const backExtraLeft = 2 * pxPerMm
       const backExtraTop = 2 * pxPerMm
       const extractCardBack = () => {
@@ -925,10 +1193,10 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
           tctx.imageSmoothingQuality = 'high'
           tctx.drawImage(
             pdfCanvas,
-            leftTrimPx + halfW + backExtraLeft,       // x start (+2mm from left of back)
-            Math.max(0, sy + backExtraTop),            // y start (+2mm down)
-            halfW - backExtraLeft,                    // source width (-2mm from left)
-            cardHeightOnPage - backExtraTop,           // source height (cropped top)
+            leftTrimPx + halfW + backExtraLeft,
+            Math.max(0, sy + backExtraTop),
+            halfW - backExtraLeft,
+            cardHeightOnPage - backExtraTop - extraBottom,
             0, 0, aadharW, aadharH
           )
         }
@@ -938,6 +1206,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
       const frontDataUrl = extractCardFront()
       const backDataUrl = extractCardBack()
 
+      resetEditorState()
       setUploadedImage(frontDataUrl)
       setFrontCardImage(frontDataUrl)
       setBackCardImage(backDataUrl)
@@ -966,18 +1235,26 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     if (!item) return
     setActiveBatchIndex(index)
     setUploadedImage(item.dataUrl)
+    if (isCard) {
+      if (index === 0) setEditorActiveSide('front')
+      else if (index === 1) setEditorActiveSide('back')
+    }
     setShowPreview(false)
   }
 
   useEffect(() => {
-    const effectiveSource = (isCard && frontCardImage) ? frontCardImage : uploadedImage
+    let effectiveSource = uploadedImage
+    if (isCard) {
+      const activeSide = cardLayoutMode === 'dual' ? editorActiveSide : singleSideChoice
+      effectiveSource = activeSide === 'front' ? (frontCardImage || uploadedImage) : (backCardImage || uploadedImage)
+    }
     if (!effectiveSource) return
     let active = true
     const img = new Image()
     img.onload = () => {
       if (!active) return
-      if (aiBackgroundRemoval || tileBackgroundMode !== 'none') {
-        const maskTolerance = tileBackgroundMode !== 'none' && !aiBackgroundRemoval ? Math.max(aiMaskTolerance, 55) : aiMaskTolerance
+      if (aiBackgroundRemoval) {
+        const maskTolerance = aiMaskTolerance
         setTimeout(() => {
           if (!active) return
           try {
@@ -993,9 +1270,8 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     }
     img.src = effectiveSource
     return () => { active = false }
-  }, [uploadedImage, frontCardImage, isCard, aiBackgroundRemoval, aiMaskTolerance, aiEdgeRefine, tileBackgroundMode])
+  }, [uploadedImage, frontCardImage, backCardImage, isCard, editorActiveSide, singleSideChoice, cardLayoutMode, aiBackgroundRemoval, aiMaskTolerance, aiEdgeRefine, tileBackgroundMode])
 
-  // Automatic background auto-crop on upload/load of card types
   useEffect(() => {
     if (!isCard || !uploadedImage || frontCardImage || isDetecting || hasAutoDetected) return
 
@@ -1005,13 +1281,11 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
         setHasAutoDetected(true)
         const result = await detectCardRegions(img)
         if (result.front) {
-          setFrontCrop(result.front.percent)
-          const frontCropped = getCroppedImgDirect(img, result.front.natural)
+          const frontCropped = await getCroppedImgCardEasy(uploadedImage, result.front.pixel)
           if (frontCropped) setFrontCardImage(frontCropped)
         }
         if (result.back) {
-          setBackCrop(result.back.percent)
-          const backCropped = getCroppedImgDirect(img, result.back.natural)
+          const backCropped = await getCroppedImgCardEasy(uploadedImage, result.back.pixel)
           if (backCropped) setBackCardImage(backCropped)
         }
       } catch (error) {
@@ -1021,55 +1295,6 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     img.src = uploadedImage
   }, [uploadedImage, isCard, frontCardImage, isDetecting, hasAutoDetected])
 
-  // Scale percentage crops to pixel crops for ReactCrop when Manual Crop modal opens
-  useEffect(() => {
-    if (showManualCrop && cropImageRef.current) {
-      const img = cropImageRef.current
-      const updatePxCrops = () => {
-        const naturalW = img.naturalWidth
-        const naturalH = img.naturalHeight
-        const clientW = img.width
-        const clientH = img.height
-        if (naturalW && clientW) {
-          const scaleX = clientW / naturalW
-          const scaleY = clientH / naturalH
-          
-          if (frontCrop && !frontCompletedCrop) {
-            const x = ((frontCrop.x || 0) * naturalW) / 100
-            const y = ((frontCrop.y || 0) * naturalH) / 100
-            const w = ((frontCrop.width || 0) * naturalW) / 100
-            const h = ((frontCrop.height || 0) * naturalH) / 100
-            setFrontCompletedCrop({
-              unit: 'px',
-              x: x * scaleX,
-              y: y * scaleY,
-              width: w * scaleX,
-              height: h * scaleY
-            })
-          }
-          if (backCrop && !backCompletedCrop) {
-            const x = ((backCrop.x || 0) * naturalW) / 100
-            const y = ((backCrop.y || 0) * naturalH) / 100
-            const w = ((backCrop.width || 0) * naturalW) / 100
-            const h = ((backCrop.height || 0) * naturalH) / 100
-            setBackCompletedCrop({
-              unit: 'px',
-              x: x * scaleX,
-              y: y * scaleY,
-              width: w * scaleX,
-              height: h * scaleY
-            })
-          }
-        }
-      }
-      
-      if (img.complete) {
-        updatePxCrops()
-      } else {
-        img.onload = updatePxCrops
-      }
-    }
-  }, [showManualCrop, frontCrop, backCrop])
 
   useEffect(() => {
     if (step !== 'edit' && step !== 'layout') return
@@ -1098,18 +1323,34 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     const slotHeight = Number('height' in maskedSourceNode ? maskedSourceNode.height : 0)
 
     if (slotWidth && slotHeight) {
-      const sourceAspect = slotWidth / slotHeight
-      const targetAspect = photoW / photoH
-      const coverW = sourceAspect > targetAspect ? slotHeight * targetAspect : slotWidth
-      const coverH = sourceAspect > targetAspect ? slotHeight : slotWidth / targetAspect
+      let sx = 0, sy = 0, sw = slotWidth, sh = slotHeight
 
-      const centerX = slotWidth / 2 + offsetX * (slotWidth * 0.25)
-      const centerY = slotHeight * (headAlign / 100) + offsetY * (slotHeight * 0.25)
-      const zoom = Math.max(1, cropZoom)
-      const sx = Math.max(0, centerX - coverW / (2 * zoom))
-      const sy = Math.max(0, centerY - coverH / (2 * zoom))
-      const sw = Math.min(slotWidth - sx, coverW / zoom)
-      const sh = Math.min(slotHeight - sy, coverH / zoom)
+      if (isCard) {
+        // For ID cards, draw full cropped card centered (50% / 50%) without face-alignment shifts cutting off edges
+        const zoom = Math.max(1, cropZoom)
+        const centerX = slotWidth / 2 + offsetX * (slotWidth * 0.5)
+        const centerY = slotHeight / 2 + offsetY * (slotHeight * 0.5)
+        const targetW = slotWidth / zoom
+        const targetH = slotHeight / zoom
+        sx = Math.max(0, Math.min(slotWidth - targetW, centerX - targetW / 2))
+        sy = Math.max(0, Math.min(slotHeight - targetH, centerY - targetH / 2))
+        sw = Math.min(slotWidth - sx, targetW)
+        sh = Math.min(slotHeight - sy, targetH)
+      } else {
+        // Passport photos logic (headAlign face positioning)
+        const sourceAspect = slotWidth / slotHeight
+        const targetAspect = photoW / photoH
+        const coverW = sourceAspect > targetAspect ? slotHeight * targetAspect : slotWidth
+        const coverH = sourceAspect > targetAspect ? slotHeight : slotWidth / targetAspect
+
+        const centerX = slotWidth / 2 + offsetX * (slotWidth * 0.25)
+        const centerY = slotHeight * (headAlign / 100) + offsetY * (slotHeight * 0.25)
+        const zoom = Math.max(1, cropZoom)
+        sx = Math.max(0, centerX - coverW / (2 * zoom))
+        sy = Math.max(0, centerY - coverH / (2 * zoom))
+        sw = Math.min(slotWidth - sx, coverW / zoom)
+        sh = Math.min(slotHeight - sy, coverH / zoom)
+      }
 
       const sharpBoost = Math.max(0, photoEditor.sharpness)
       if (sharpBoost > 0) {
@@ -1135,17 +1376,38 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
       ? (layoutCount === 'auto' ? maxFit : layoutCount)
       : (desiredOverride === 'auto' ? maxFit : desiredOverride)
 
-    const count = Math.min(desired, maxFit)
+    const count = Math.min(Number(desired), maxFit)
 
-    // Eco-Logic: Fill columns vertically first (2 rows high)
-    if (count <= 2) return { cols: 1, rows: 2, count }
-    if (count <= 4) return { cols: 2, rows: 2, count }
-    if (count <= 6) return { cols: 3, rows: 2, count }
-    if (count <= 8) return { cols: 4, rows: 2, count }
+    let bestCols = 1
+    let bestRows = count
+    const paperAspect = usableW / Math.max(1, usableH)
+    let bestScore = Infinity
 
-    const cols = Math.min(maxCols, Math.max(1, Math.ceil(Math.sqrt(count * (usableW / Math.max(1, usableH))))))
-    const rows = Math.max(1, Math.ceil(count / cols))
-    return { cols, rows, count }
+    for (let c = 1; c <= maxCols; c++) {
+      const r = Math.ceil(count / c)
+      if (r > maxRows) continue
+
+      const gridW = c * photoW + (c - 1) * gapPx
+      const gridH = r * photoH + (r - 1) * gapPx
+      const gridAspect = gridW / Math.max(1, gridH)
+
+      let score = Math.abs(gridAspect - paperAspect)
+      // Bonus if it's a perfect rectangle grid (no empty slots)
+      if (c * r === count) score -= 0.5
+
+      if (score < bestScore) {
+        bestScore = score
+        bestCols = c
+        bestRows = r
+      }
+    }
+
+    if (bestScore === Infinity) {
+      bestCols = Math.min(count, maxCols)
+      bestRows = Math.ceil(count / bestCols)
+    }
+
+    return { cols: bestCols, rows: bestRows, count }
   }
 
   const removeBackgroundWithMask = (img: HTMLImageElement, tolerance: number, edgeRefine: number) => {
@@ -1316,8 +1578,8 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
         img.src = sourceDataUrl
       })
 
-      const shouldExtractForeground = aiBackgroundRemoval || tileBackgroundMode !== 'none'
-      const maskTolerance = tileBackgroundMode !== 'none' && !aiBackgroundRemoval ? Math.max(aiMaskTolerance, 55) : aiMaskTolerance
+      const shouldExtractForeground = aiBackgroundRemoval
+      const maskTolerance = aiMaskTolerance
       const sourceNode = shouldExtractForeground ? removeBackgroundWithMask(img, maskTolerance, aiEdgeRefine) : img
       const sourceWidth = 'width' in sourceNode ? sourceNode.width : img.width
       const sourceHeight = 'height' in sourceNode ? sourceNode.height : img.height
@@ -1343,11 +1605,18 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
 
       const slotSources: string[] = []
 
+      const chosenImage = singleSideChoice === 'front'
+        ? (frontCardImage || sourceDataUrl)
+        : (backCardImage || sourceDataUrl)
+
       if (isCard && cardLayoutMode === 'dual') {
         slotSources.push(frontCardImage || sourceDataUrl)
         slotSources.push(backCardImage || sourceDataUrl)
+      } else if (isCard && cardLayoutMode === 'duplicate') {
+        slotSources.push(chosenImage)
+        slotSources.push(chosenImage)
       } else if (isCard && cardLayoutMode === 'single') {
-        slotSources.push(frontCardImage || sourceDataUrl)
+        slotSources.push(chosenImage)
       } else if (useBatchFill) {
         const repeatPerImage = Number(layoutCount)
         for (let index = activeBatchIndex; index < batchImages.length && slotSources.length < count; index++) {
@@ -1400,8 +1669,10 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
         ctx.setLineDash([])
       }
 
-      const startX = marginPx
-      const startY = marginPx
+      const gridW = cols * photoW + Math.max(0, cols - 1) * gapPx
+      const gridH = rows * photoH + Math.max(0, rows - 1) * gapPx
+      const startX = Math.max(marginPx, (origW - gridW) / 2)
+      const startY = Math.max(marginPx, (origH - gridH) / 2)
 
       ctx.filter = getFilterString()
       for (let i = 0; i < count; i++) {
@@ -1422,7 +1693,6 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
           const slotWidth = slotSource.width
           const slotHeight = slotSource.height
 
-          // Draw the card at 100% of the slot size (original image scale), centred within the slot
           const cardScale = 1.0
           const drawW = photoW * cardScale
           const drawH = photoH * cardScale
@@ -1437,22 +1707,33 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
           }
 
           if (cardBleed > 0) {
-            // Create "extra image" bleed by drawing a slightly enlarged, blurred version 
-            // of the card BEHIND the main crisp card. This creates a seamless color bleed
-            // matching the card's edges, without enlarging the primary card content.
             ctx.save()
-            ctx.filter = 'blur(6px)'
-            const bleedW = drawW + cardBleed * 2
-            const bleedH = drawH + cardBleed * 2
-            ctx.drawImage(slotNode, 0, 0, slotWidth, slotHeight,
-              drawX - cardBleed, drawY - cardBleed, bleedW, bleedH)
+            const B = cardBleed
+            const E = 2 // Take 2px edge from the source
+            const sW = slotWidth
+            const sH = slotHeight
+            const dX = drawX
+            const dY = drawY
+            const dW = drawW
+            const dH = drawH
+
+            // Draw the 4 edges stretched outwards
+            ctx.drawImage(slotNode, 0, 0, sW, E, dX, dY - B, dW, B) // Top
+            ctx.drawImage(slotNode, 0, sH - E, sW, E, dX, dY + dH, dW, B) // Bottom
+            ctx.drawImage(slotNode, 0, 0, E, sH, dX - B, dY, B, dH) // Left
+            ctx.drawImage(slotNode, sW - E, 0, E, sH, dX + dW, dY, B, dH) // Right
+
+            // Draw the 4 corners stretched outwards
+            ctx.drawImage(slotNode, 0, 0, E, E, dX - B, dY - B, B, B) // Top-Left
+            ctx.drawImage(slotNode, sW - E, 0, E, E, dX + dW, dY - B, B, B) // Top-Right
+            ctx.drawImage(slotNode, 0, sH - E, E, E, dX - B, dY + dH, B, B) // Bottom-Left
+            ctx.drawImage(slotNode, sW - E, sH - E, E, E, dX + dW, dY + dH, B, B) // Bottom-Right
             ctx.restore()
           }
 
-          // Draw the actual crisp image at exactly the correct scale on top
           ctx.drawImage(slotNode, 0, 0, slotWidth, slotHeight, drawX, drawY, drawW, drawH)
           ctx.restore()
-          // Card Border (Rounded - Only in Preview)
+
           if (!forPrint) {
             ctx.strokeStyle = 'rgba(0,0,0,0.45)'
             ctx.lineWidth = 1
@@ -1460,7 +1741,6 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
             ctx.stroke()
           }
 
-          // Center cutting guide — draw once after last card slot
           if (cardLayoutMode === 'dual' && i === count - 1) {
             const midY = paperH / 2
             ctx.save()
@@ -1472,7 +1752,6 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
             ctx.setLineDash([18, 12])
             ctx.stroke()
             ctx.setLineDash([])
-            // Small scissor tick marks at ends
             ctx.lineWidth = 2
             ctx.setLineDash([])
             ctx.beginPath()
@@ -1490,7 +1769,6 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
         const x = startX + col * (photoW + gapPx)
         const y = startY + row * (photoH + gapPx)
 
-        // Photo Border (Frame)
         if (photoBorderWidth > 0) {
           ctx.strokeStyle = photoBorderColor
           ctx.lineWidth = photoBorderWidth
@@ -1520,7 +1798,6 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
         const sy = Math.max(0, centerY - coverH / (2 * zoom))
         const sw = Math.min(slotWidth - sx, coverW / zoom)
         const sh = Math.min(slotHeight - sy, coverH / zoom)
-
 
         ctx.drawImage(slotNode, sx, sy, sw, sh, x, y, photoW, photoH)
 
@@ -1566,7 +1843,6 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     }
   }
 
-  // Automatic Real-time Layout Updates
   useEffect(() => {
     const handler = setTimeout(() => {
       if (step === 'layout' && uploadedImage) {
@@ -1591,7 +1867,8 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     cardLayoutMode,
     cardBleed,
     frontCardImage,
-    backCardImage
+    backCardImage,
+    singleSideChoice
   ])
 
   const printRenderedPreview = async () => {
@@ -1599,7 +1876,6 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     setIsRendering(true)
     try {
       const isCard = ['pan', 'aadhar', 'dl', 'cm_health', 'pm_health'].includes(photoSizeKey)
-      // For cards, we generate a borderless version for print
       const printDataUrl = isCard ? await renderCardFromSource(uploadedImage, false, true) : renderedDataUrl
 
       if (!printDataUrl) return
@@ -1648,9 +1924,36 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     }
   }
 
-
   return (
-    <div style={{ position: 'relative', width: '100%', minHeight: 'calc(100vh - 120px)' }}>
+    <div className="photo-studio-module">
+      {/* -------------------------------------------------- */}
+      {/* CONSISTENT HEADER SHELL ACROSS ALL THREE STEPS     */}
+      {/* -------------------------------------------------- */}
+      <header className="ps-header-shell">
+        <div className="ps-header-left">
+          <div className="ps-header-title-group">
+            <h2 className="ps-header-title">Passport & Photo Studio</h2>
+            <span className="ps-header-subtitle">Professional Photo Processing & ID Card Generator</span>
+          </div>
+        </div>
+        <div className="ps-stepper">
+          <div className={`ps-step-item ${step === 'upload' ? 'active' : 'completed'}`} onClick={() => setStep('upload')}>
+            <span className="ps-step-num">1</span>
+            <span className="ps-step-label">Upload</span>
+          </div>
+          <div className="ps-step-divider" />
+          <div className={`ps-step-item ${step === 'edit' ? 'active' : (step === 'layout' ? 'completed' : '')}`} onClick={() => { if (uploadedImage) setStep('edit') }}>
+            <span className="ps-step-num">2</span>
+            <span className="ps-step-label">Edit</span>
+          </div>
+          <div className="ps-step-divider" />
+          <div className={`ps-step-item ${step === 'layout' ? 'active' : ''}`} onClick={() => { if (uploadedImage) setStep('layout') }}>
+            <span className="ps-step-num">3</span>
+            <span className="ps-step-label">Layout</span>
+          </div>
+        </div>
+      </header>
+
       {/* ------------------- */}
       {/* GLOBAL PDF OVERLAYS */}
       {/* ------------------- */}
@@ -1658,7 +1961,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', zIndex: 4000, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'white' }}>
           <div style={{ width: '40px', height: '40px', border: '4px solid rgba(255,255,255,0.1)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 1s linear infinite', marginBottom: '16px' }} />
           <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-          <div style={{ fontSize: '18px', fontWeight: '600' }}>Processing e-PAN Document...</div>
+          <div style={{ fontSize: '18px', fontWeight: '600' }}>Processing Document...</div>
           <p style={{ color: 'rgba(255,255,255,0.6)', marginTop: '8px' }}>Decrypting and extracting card regions</p>
         </div>
       )}
@@ -1667,7 +1970,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 3000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
           <div style={{ background: 'var(--bg-dark)', padding: '24px', borderRadius: '20px', border: '1px solid var(--glass-border)', maxWidth: '420px', width: '100%', textAlign: 'center' }}>
             <h3 style={{ color: 'white', margin: '0 0 16px' }}>
-              {pdfType === 'aadhar' ? '🔐 Aadhaar PDF Password' : '🔐 PAN PDF Password'}
+              {pdfType === 'aadhar' ? <><IconLock style={{ verticalAlign: 'middle', marginRight: '6px' }} /> Aadhaar PDF Password</> : <><IconLock style={{ verticalAlign: 'middle', marginRight: '6px' }} /> PAN PDF Password</>}
             </h3>
             <p style={{ color: 'var(--text-muted)', fontSize: '14px', marginBottom: '20px' }}>
               {pdfType === 'aadhar'
@@ -1684,8 +1987,8 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
               onKeyDown={(e) => e.key === 'Enter' && (pdfType === 'aadhar' ? processAadhaarPdf(pdfPassword) : processPanPdf(pdfPassword))}
             />
             <div style={{ display: 'flex', gap: '12px' }}>
-              <button className="btn-secondary" style={{ flex: 1 }} onClick={() => { setShowPasswordPrompt(false); setPendingPdfFile(null); }}>Cancel</button>
-              <button className="btn-primary" style={{ flex: 1 }}
+              <button className="ps-btn ps-btn-secondary" style={{ flex: 1 }} onClick={() => { setShowPasswordPrompt(false); setPendingPdfFile(null); }}>Cancel</button>
+              <button className="ps-btn ps-btn-primary" style={{ flex: 1 }}
                 onClick={() => pdfType === 'aadhar' ? processAadhaarPdf(pdfPassword) : processPanPdf(pdfPassword)}
                 disabled={isProcessingPdf}>
                 {isProcessingPdf ? 'Processing...' : 'Unlock & Extract'}
@@ -1694,107 +1997,101 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
           </div>
         </div>
       )}
+
       {/* ------------------- */}
       {/* UPLOAD STEP VIEW    */}
       {/* ------------------- */}
       {step === 'upload' && (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 'calc(100vh - 120px)', padding: '20px 40px', position: 'relative' }}>
-
+        <div className="ps-upload-view">
           <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,application/pdf,.pdf" multiple style={{ display: 'none' }} onChange={(e) => handleUploadMany(Array.from(e.target.files || []))} />
 
-          <div style={{ textAlign: 'left', width: '100%', maxWidth: '860px', margin: '0 auto' }}>
+          <div className="ps-upload-content">
             <style>{`
               @keyframes pasteGlow { 0%,100% { box-shadow: 0 0 0 0 rgba(99,202,253,0); } 50% { box-shadow: 0 0 0 10px rgba(99,202,253,0.55); } }
               .doc-btn-active { animation: pasteGlow 1s ease-in-out infinite !important; outline: 2px dashed rgba(99,202,253,0.9) !important; }
             `}</style>
 
-            <h3 style={{ color: 'var(--text-main)', fontSize: '18px', marginBottom: '16px', borderLeft: '4px solid var(--primary)', paddingLeft: '12px' }}>Standard Photos</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px', marginBottom: '32px' }}>
+            <h3 className="ps-section-title">Standard Photos</h3>
+            <div className="ps-doc-grid">
               <button
-                className={`btn-primary${hoveredBtn === 'passport' ? ' doc-btn-active' : ''}`}
+                className={`ps-doc-card passport${hoveredBtn === 'passport' ? ' doc-btn-active' : ''}`}
                 onClick={() => { setPhotoSizeKey('passport'); fileInputRef.current?.click(); }}
                 onMouseEnter={() => setHoveredBtn('passport')}
                 onMouseLeave={() => setHoveredBtn(null)}
                 onDragOver={(e) => { e.preventDefault(); setHoveredBtn('passport') }}
                 onDragLeave={() => setHoveredBtn(null)}
                 onDrop={(e) => { e.preventDefault(); setHoveredBtn(null); setPhotoSizeKey('passport'); handleUploadMany(Array.from(e.dataTransfer.files || [])) }}
-                style={documentButtonStyle}
               >
-                <span style={{ fontSize: '32px' }}>🛂</span>
-                <span style={{ fontSize: '16px', fontWeight: '700' }}>Passport / Stamp</span>
+                <span className="ps-doc-icon"><IconPassport size={32} /></span>
+                <span className="ps-doc-label">Passport / Stamp</span>
               </button>
             </div>
 
-            <h3 style={{ color: 'var(--text-main)', fontSize: '18px', marginBottom: '16px', borderLeft: '4px solid #10b981', paddingLeft: '12px' }}>Identity Documents</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px' }}>
+            <h3 className="ps-section-title identity">Identity Documents</h3>
+            <div className="ps-doc-grid">
               <button
-                className={`btn-primary${hoveredBtn === 'pan' ? ' doc-btn-active' : ''}`}
+                className={`ps-doc-card pan${hoveredBtn === 'pan' ? ' doc-btn-active' : ''}`}
                 onClick={() => { setPhotoSizeKey('pan'); fileInputRef.current?.click(); }}
                 onMouseEnter={() => setHoveredBtn('pan')}
                 onMouseLeave={() => setHoveredBtn(null)}
                 onDragOver={(e) => { e.preventDefault(); setHoveredBtn('pan') }}
                 onDragLeave={() => setHoveredBtn(null)}
                 onDrop={(e) => { e.preventDefault(); setHoveredBtn(null); setPhotoSizeKey('pan'); handleUploadMany(Array.from(e.dataTransfer.files || [])) }}
-                style={{ ...documentButtonStyle, background: 'linear-gradient(135deg, #059669 0%, #047857 100%)', boxShadow: '0 8px 20px rgba(5, 150, 105, 0.3)' }}
               >
-                <span style={{ fontSize: '32px' }}>💳</span>
-                <span style={{ fontSize: '16px', fontWeight: '700' }}>PAN Card</span>
+                <span className="ps-doc-icon"><IconCard size={32} /></span>
+                <span className="ps-doc-label">PAN Card</span>
               </button>
 
               <button
-                className={`btn-primary${hoveredBtn === 'aadhar' ? ' doc-btn-active' : ''}`}
+                className={`ps-doc-card aadhar${hoveredBtn === 'aadhar' ? ' doc-btn-active' : ''}`}
                 onClick={() => { setPhotoSizeKey('aadhar'); setPdfType('aadhar'); fileInputRef.current?.click(); }}
                 onMouseEnter={() => setHoveredBtn('aadhar')}
                 onMouseLeave={() => setHoveredBtn(null)}
                 onDragOver={(e) => { e.preventDefault(); setHoveredBtn('aadhar') }}
                 onDragLeave={() => setHoveredBtn(null)}
                 onDrop={(e) => { e.preventDefault(); setHoveredBtn(null); setPhotoSizeKey('aadhar'); setPdfType('aadhar'); handleUploadMany(Array.from(e.dataTransfer.files || [])) }}
-                style={{ ...documentButtonStyle, background: 'linear-gradient(135deg, #d97706 0%, #b45309 100%)', boxShadow: '0 8px 20px rgba(217, 119, 6, 0.3)' }}
               >
-                <span style={{ fontSize: '32px' }}>🆔</span>
-                <span style={{ fontSize: '16px', fontWeight: '700' }}>Aadhar Card</span>
+                <span className="ps-doc-icon"><IconIdCard size={32} /></span>
+                <span className="ps-doc-label">Aadhar Card</span>
               </button>
 
               <button
-                className={`btn-primary${hoveredBtn === 'dl' ? ' doc-btn-active' : ''}`}
+                className={`ps-doc-card dl${hoveredBtn === 'dl' ? ' doc-btn-active' : ''}`}
                 onClick={() => { setPhotoSizeKey('dl'); fileInputRef.current?.click(); }}
                 onMouseEnter={() => setHoveredBtn('dl')}
                 onMouseLeave={() => setHoveredBtn(null)}
                 onDragOver={(e) => { e.preventDefault(); setHoveredBtn('dl') }}
                 onDragLeave={() => setHoveredBtn(null)}
                 onDrop={(e) => { e.preventDefault(); setHoveredBtn(null); setPhotoSizeKey('dl'); handleUploadMany(Array.from(e.dataTransfer.files || [])) }}
-                style={{ ...documentButtonStyle, background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)', boxShadow: '0 8px 20px rgba(124, 58, 237, 0.3)' }}
               >
-                <span style={{ fontSize: '32px' }}>🚗</span>
-                <span style={{ fontSize: '16px', fontWeight: '700' }}>Driving Licence</span>
+                <span className="ps-doc-icon"><IconCar size={32} /></span>
+                <span className="ps-doc-label">Driving Licence</span>
               </button>
 
               <button
-                className={`btn-primary${hoveredBtn === 'cm_health' ? ' doc-btn-active' : ''}`}
+                className={`ps-doc-card cm${hoveredBtn === 'cm_health' ? ' doc-btn-active' : ''}`}
                 onClick={() => { setPhotoSizeKey('cm_health'); fileInputRef.current?.click(); }}
                 onMouseEnter={() => setHoveredBtn('cm_health')}
                 onMouseLeave={() => setHoveredBtn(null)}
                 onDragOver={(e) => { e.preventDefault(); setHoveredBtn('cm_health') }}
                 onDragLeave={() => setHoveredBtn(null)}
                 onDrop={(e) => { e.preventDefault(); setHoveredBtn(null); setPhotoSizeKey('cm_health'); handleUploadMany(Array.from(e.dataTransfer.files || [])) }}
-                style={{ ...documentButtonStyle, background: 'linear-gradient(135deg, #db2777 0%, #be185d 100%)', boxShadow: '0 8px 20px rgba(219, 39, 119, 0.3)' }}
               >
-                <span style={{ fontSize: '32px' }}>🏥</span>
-                <span style={{ fontSize: '16px', fontWeight: '700' }}>CM Health Card</span>
+                <span className="ps-doc-icon"><IconHospital size={32} /></span>
+                <span className="ps-doc-label">CM Health Card</span>
               </button>
 
               <button
-                className={`btn-primary${hoveredBtn === 'pm_health' ? ' doc-btn-active' : ''}`}
+                className={`ps-doc-card pm${hoveredBtn === 'pm_health' ? ' doc-btn-active' : ''}`}
                 onClick={() => { setPhotoSizeKey('pm_health'); fileInputRef.current?.click(); }}
                 onMouseEnter={() => setHoveredBtn('pm_health')}
                 onMouseLeave={() => setHoveredBtn(null)}
                 onDragOver={(e) => { e.preventDefault(); setHoveredBtn('pm_health') }}
                 onDragLeave={() => setHoveredBtn(null)}
                 onDrop={(e) => { e.preventDefault(); setHoveredBtn(null); setPhotoSizeKey('pm_health'); handleUploadMany(Array.from(e.dataTransfer.files || [])) }}
-                style={{ ...documentButtonStyle, background: 'linear-gradient(135deg, #4f46e5 0%, #4338ca 100%)', boxShadow: '0 8px 20px rgba(79, 70, 229, 0.3)' }}
               >
-                <span style={{ fontSize: '32px' }}>🏥</span>
-                <span style={{ fontSize: '16px', fontWeight: '700' }}>PM Health Card</span>
+                <span className="ps-doc-icon"><IconHospital size={32} /></span>
+                <span className="ps-doc-label">PM Health Card</span>
               </button>
             </div>
           </div>
@@ -1805,33 +2102,98 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
       {/* FULL SCREEN EDIT MODE */}
       {/* --------------------- */}
       {step === 'edit' && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.85)', zIndex: 1200, display: 'flex', flexDirection: 'column', padding: '20px'
-        }}>
-          <div style={{ width: '100%', maxWidth: '1400px', margin: '0 auto', background: 'var(--bg-dark)', borderRadius: '16px', border: '1px solid var(--glass-border)', display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-            <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--glass-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h2 style={{ margin: 0, color: 'var(--text-main)', fontSize: '20px' }}>Photo Editor</h2>
-              <div style={{ display: 'flex', gap: '12px' }}>
-                <button className="btn-secondary" style={{ padding: '6px 12px', borderRadius: '6px', fontSize: '12px' }} onClick={() => setStep('upload')}>&larr; Back</button>
-                <button className="btn-primary" style={{ padding: '6px 18px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold' }} onClick={() => setStep('layout')}>Done &rarr;</button>
+        <div className="ps-edit-view">
+          <div className="ps-edit-container">
+            <div className="ps-edit-header">
+              <h2 className="ps-edit-title">Photo Editor</h2>
+              <div className="ps-edit-actions">
+                <button className="ps-btn ps-btn-secondary ps-btn-sm" onClick={() => setStep('upload')}>&larr; Back</button>
+                <button className="ps-btn ps-btn-primary ps-btn-sm" onClick={() => setStep('layout')}>Done &rarr;</button>
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', height: 'calc(100% - 70px)' }}>
+            <div className="ps-edit-body">
               {/* Left Canvas Preview */}
-              <div style={{ padding: '24px', background: '#111', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-                <canvas ref={singlePreviewCanvasRef} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', boxShadow: '0 4px 20px rgba(0,0,0,0.5)', borderRadius: '4px', background: 'url("data:image/svg+xml,%3Csvg width=\'20\' height=\'20\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cpath d=\'M0 0h10v10H0zm10 10h10v10H10z\' fill=\'%23f0f0f0\' fill-rule=\'evenodd\'/%3E%3C/svg%3E") #fff' }} />
+              <div className="ps-canvas-preview-area">
+                {isCard && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', flexShrink: 0, zIndex: 10 }}>
+                    <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-main)' }}>Preview Side:</span>
+                    <button
+                      type="button"
+                      className={`ps-btn ps-btn-sm ${editorActiveSide === 'front' ? 'ps-btn-primary' : 'ps-btn-secondary'}`}
+                      onClick={() => {
+                        setEditorActiveSide('front')
+                        if (batchImages.length > 0) setActiveBatchIndex(0)
+                      }}
+                    >
+                      Front Side {frontCardImage ? <IconCheck size={14} style={{ verticalAlign: 'middle', marginLeft: '4px' }} /> : ''}
+                    </button>
+                    <button
+                      type="button"
+                      className={`ps-btn ps-btn-sm ${editorActiveSide === 'back' ? 'ps-btn-primary' : 'ps-btn-secondary'}`}
+                      onClick={() => {
+                        setEditorActiveSide('back')
+                        if (batchImages.length > 1) setActiveBatchIndex(1)
+                      }}
+                    >
+                      Back Side {backCardImage ? <IconCheck size={14} style={{ verticalAlign: 'middle', marginLeft: '4px' }} /> : ''}
+                    </button>
+                  </div>
+                )}
+                {/* PDF fallback: let user crop from the full original page */}
+                {fullPageSourceImage && isCard && (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: '8px',
+                    marginBottom: '8px', flexShrink: 0,
+                    padding: '6px 10px',
+                    background: 'rgba(234,179,8,0.12)',
+                    border: '1px solid rgba(234,179,8,0.35)',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    color: 'var(--text-muted, #94a3b8)',
+                  }}>
+                    <span><IconWarning size={14} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#fbbf24' }} /> Auto-crop doesn't look right?</span>
+                    <button
+                      type="button"
+                      style={{
+                        marginLeft: '4px', padding: '3px 10px',
+                        borderRadius: '6px', border: '1px solid rgba(234,179,8,0.5)',
+                        background: 'rgba(234,179,8,0.18)', color: '#fbbf24',
+                        fontSize: '12px', fontWeight: 600, cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                      }}
+                      onClick={() => {
+                        // Load the full page into both source slots so Manual Crop shows the entire page
+                        setFrontSourceImage(fullPageSourceImage)
+                        setBackSourceImage(fullPageSourceImage)
+                        setActiveCropSide(editorActiveSide === 'back' ? 'back' : 'front')
+                        setShowManualCrop(true)
+                      }}
+                    >
+                      Crop from full page
+                    </button>
+                  </div>
+                )}
+                <div className="ps-canvas-container">
+                  <canvas
+                    ref={singlePreviewCanvasRef}
+                    className="ps-canvas-element"
+                    style={{
+                      background: 'url("data:image/svg+xml,%3Csvg width=\'20\' height=\'20\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cpath d=\'M0 0h10v10H0zm10 10h10v10H10z\' fill=\'%23f0f0f0\' fill-rule=\'evenodd\'/%3E%3C/svg%3E") #fff'
+                    }}
+                  />
+                </div>
               </div>
 
               {/* Right Controls Panel */}
-              <div className="custom-scrollbar" style={{ padding: '24px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '20px', background: 'var(--glass)' }}>
+              <div className="ps-controls-sidebar custom-scrollbar">
                 {batchImages.length > 1 && (
-                  <div>
-                    <h3 style={{ margin: '0 0 10px', color: 'var(--text-main)', fontSize: '14px' }}>Batch Photos</h3>
-                    <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '4px' }}>
+                  <div className="ps-control-section">
+                    <h3 className="ps-control-heading">Batch Photos</h3>
+                    <div className="ps-batch-list">
                       {batchImages.map((item, index) => (
-                        <button key={item.id} type="button" onClick={() => activateBatchImage(index)} style={{ minWidth: '86px', borderRadius: '10px', border: index === activeBatchIndex ? '2px solid var(--primary)' : '1px solid var(--glass-border)', background: 'var(--bg-secondary)', padding: '6px', cursor: 'pointer', color: 'var(--text-main)' }}>
-                          <img src={item.dataUrl} alt={item.name} style={{ width: '100%', height: '52px', objectFit: 'cover', borderRadius: '6px' }} />
+                        <button key={item.id} type="button" onClick={() => activateBatchImage(index)} className={`ps-thumbnail-btn ${index === activeBatchIndex ? 'active' : ''}`}>
+                          <img src={item.dataUrl} alt={item.name} className="ps-thumbnail-img" />
                           <span style={{ display: 'block', marginTop: '4px', fontSize: '10px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.name}</span>
                         </button>
                       ))}
@@ -1839,63 +2201,115 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
                   </div>
                 )}
 
-                {/* Photo Size selection moved to Layout page */}
-
-
-                <div>
-                  <h3 style={{ margin: '0 0 10px', color: 'var(--text-main)', fontSize: '15px' }}>Adjustments & Crop</h3>
-                  <div style={{ color: 'var(--text-main)', display: 'grid', gap: '12px', fontSize: '14px' }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Crop Zoom</span><span>{cropZoom.toFixed(2)}x</span></div><input type="range" min={1} max={2.5} step={0.01} value={cropZoom} onChange={(e) => setCropZoom(Number(e.target.value))} /></div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Horizontal shift</span><span>{offsetX.toFixed(2)}</span></div><input type="range" min={-1} max={1} step={0.01} value={offsetX} onChange={(e) => setOffsetX(Number(e.target.value))} /></div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Vertical shift</span><span>{offsetY.toFixed(2)}</span></div><input type="range" min={-1} max={1} step={0.01} value={offsetY} onChange={(e) => setOffsetY(Number(e.target.value))} /></div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Head alignment</span><span>{headAlign}%</span></div><input type="range" min={20} max={70} step={1} value={headAlign} onChange={(e) => setHeadAlign(Number(e.target.value))} /></div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Brightness</span><span>{photoEditor.brightness}%</span></div><input type="range" min={50} max={150} value={photoEditor.brightness} onChange={(e) => setPhotoEditor((p) => ({ ...p, brightness: Number(e.target.value) }))} /></div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Contrast</span><span>{photoEditor.contrast}%</span></div><input type="range" min={50} max={150} value={photoEditor.contrast} onChange={(e) => setPhotoEditor((p) => ({ ...p, contrast: Number(e.target.value) }))} /></div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Saturation</span><span>{photoEditor.saturation}%</span></div><input type="range" min={0} max={200} value={photoEditor.saturation} onChange={(e) => setPhotoEditor((p) => ({ ...p, saturation: Number(e.target.value) }))} /></div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Sharpness</span><span>{photoEditor.sharpness}%</span></div><input type="range" min={0} max={40} value={photoEditor.sharpness} onChange={(e) => setPhotoEditor((p) => ({ ...p, sharpness: Number(e.target.value) }))} /></div>
+                <div className="ps-control-section">
+                  <h3 className="ps-control-heading">Adjustments & Crop</h3>
+                  <div className="ps-slider-stack">
+                    <div className="ps-slider-item"><div className="ps-slider-label"><span>Crop Zoom</span><span>{cropZoom.toFixed(2)}x</span></div><input type="range" min={1} max={2.5} step={0.01} value={cropZoom} onChange={(e) => setCropZoom(Number(e.target.value))} /></div>
+                    <div className="ps-slider-item"><div className="ps-slider-label"><span>Horizontal shift</span><span>{offsetX.toFixed(2)}</span></div><input type="range" min={-1} max={1} step={0.01} value={offsetX} onChange={(e) => setOffsetX(Number(e.target.value))} /></div>
+                    <div className="ps-slider-item"><div className="ps-slider-label"><span>Vertical shift</span><span>{offsetY.toFixed(2)}</span></div><input type="range" min={-1} max={1} step={0.01} value={offsetY} onChange={(e) => setOffsetY(Number(e.target.value))} /></div>
+                    {!isCard && (
+                      <div className="ps-slider-item"><div className="ps-slider-label"><span>Head alignment</span><span>{headAlign}%</span></div><input type="range" min={20} max={70} step={1} value={headAlign} onChange={(e) => setHeadAlign(Number(e.target.value))} /></div>
+                    )}
+                    <div className="ps-slider-item"><div className="ps-slider-label"><span>Brightness</span><span>{photoEditor.brightness}%</span></div><input type="range" min={50} max={150} value={photoEditor.brightness} onChange={(e) => setPhotoEditor((p) => ({ ...p, brightness: Number(e.target.value) }))} /></div>
+                    <div className="ps-slider-item"><div className="ps-slider-label"><span>Contrast</span><span>{photoEditor.contrast}%</span></div><input type="range" min={50} max={150} value={photoEditor.contrast} onChange={(e) => setPhotoEditor((p) => ({ ...p, contrast: Number(e.target.value) }))} /></div>
+                    <div className="ps-slider-item"><div className="ps-slider-label"><span>Saturation</span><span>{photoEditor.saturation}%</span></div><input type="range" min={0} max={200} value={photoEditor.saturation} onChange={(e) => setPhotoEditor((p) => ({ ...p, saturation: Number(e.target.value) }))} /></div>
+                    <div className="ps-slider-item"><div className="ps-slider-label"><span>Sharpness</span><span>{photoEditor.sharpness}%</span></div><input type="range" min={0} max={40} value={photoEditor.sharpness} onChange={(e) => setPhotoEditor((p) => ({ ...p, sharpness: Number(e.target.value) }))} /></div>
                   </div>
                   <div style={{ marginTop: '16px', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px' }}>
-                    <button className="btn-primary" style={{ ...compactButtonStyle, background: 'linear-gradient(135deg, #3d5afe 0%, #536dfe 100%)', fontWeight: 'bold', gridColumn: 'span 3', padding: '10px' }} onClick={applyClarity}>✨ Enhance Clarity (Auto)</button>
-                    <button className="btn-primary" style={{ ...compactButtonStyle, background: 'linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)', fontWeight: 'bold', gridColumn: 'span 3', padding: '10px' }} onClick={() => { if (isDualCard) { setActiveCropSide('front'); } setShowManualCrop(true); }}>✂️ Manual Crop</button>
-                    <button className="btn-secondary" style={compactButtonStyle} onClick={() => applyQualityPreset('normal')}>Reset</button>
-                    <button className="btn-secondary" style={compactButtonStyle} onClick={applyAutoEnhance}>Auto</button>
-                    <button className="btn-secondary" style={compactButtonStyle} onClick={applyFaceClarity}>Face</button>
-                    <button className="btn-secondary" style={compactButtonStyle} onClick={applyWarmTone}>Warm Tone</button>
-                    <button className="btn-secondary" style={compactButtonStyle} onClick={applyCoolTone}>Cool Tone</button>
+                    <button className="ps-btn ps-btn-accent" style={{ gridColumn: 'span 3', padding: '10px' }} onClick={applyClarity}><IconSparkles size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Enhance Clarity (Auto)</button>
+                    <button className="ps-btn ps-btn-primary" style={{ gridColumn: 'span 3', padding: '10px' }} onClick={() => { if (isDualCard) { setActiveCropSide(editorActiveSide); } setShowManualCrop(true); }}><IconCrop size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Manual Crop</button>
+                    <button className="ps-btn ps-btn-secondary ps-btn-sm" onClick={() => applyQualityPreset('normal')}>Reset</button>
+                    <button className="ps-btn ps-btn-secondary ps-btn-sm" onClick={applyAutoEnhance}>Auto</button>
+                    <button className="ps-btn ps-btn-secondary ps-btn-sm" onClick={applyFaceClarity}>Face</button>
+                    <button className="ps-btn ps-btn-secondary ps-btn-sm" onClick={applyWarmTone}>Warm Tone</button>
+                    <button className="ps-btn ps-btn-secondary ps-btn-sm" onClick={applyCoolTone}>Cool Tone</button>
                   </div>
                 </div>
 
-                <div>
-                  <h3 style={{ margin: '0 0 10px', color: 'var(--text-main)', fontSize: '15px' }}>Background Masking</h3>
-                  <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginBottom: '8px' }}>Replace original background with color:</div>
-                  <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                    <div
-                      onClick={() => setTileBackgroundMode('white')}
-                      style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'white', border: tileBackgroundMode === 'white' ? '2px solid var(--primary)' : '1px solid #ddd', cursor: 'pointer', transition: 'all 0.2s' }}
-                      title="White Background"
-                    />
-                    <div
-                      onClick={() => setTileBackgroundMode('blue')}
-                      style={{ width: '32px', height: '32px', borderRadius: '50%', background: '#007bff', border: tileBackgroundMode === 'blue' ? '2px solid var(--primary)' : '1px solid #ddd', cursor: 'pointer', transition: 'all 0.2s' }}
-                      title="Blue Background"
-                    />
-                    <div
-                      onClick={() => setTileBackgroundMode('none')}
-                      style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'transparent', border: tileBackgroundMode === 'none' ? '2px solid var(--primary)' : '1px dashed #666', cursor: 'pointer', transition: 'all 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                      title="Transparent"
+                {/* Background Removal — passport/stamp photos only */}
+                {!isCard && (
+                  <div className="ps-control-section">
+                    <h3 className="ps-control-heading"><IconMagic size={18} style={{ verticalAlign: 'text-bottom', marginRight: '6px' }} /> Background Removal</h3>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginBottom: '10px' }}>
+                      Works best on photos with a solid white or blue studio background.
+                    </div>
+
+                    {/* Toggle button */}
+                    <button
+                      type="button"
+                      onClick={() => setAiBackgroundRemoval(v => !v)}
+                      style={{
+                        width: '100%',
+                        padding: '10px 14px',
+                        borderRadius: '10px',
+                        border: `2px solid ${aiBackgroundRemoval ? 'var(--primary)' : 'var(--glass-border)'}`,
+                        background: aiBackgroundRemoval ? 'rgba(99,102,241,0.15)' : 'var(--glass)',
+                        color: aiBackgroundRemoval ? 'var(--primary)' : 'var(--text-main)',
+                        fontWeight: 700,
+                        fontSize: '14px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        transition: 'all 0.2s ease',
+                        marginBottom: '12px',
+                      }}
                     >
-                      <span style={{ fontSize: '10px', color: '#666' }}>❌</span>
+                      <span>{aiBackgroundRemoval ? <><IconCheck size={16} style={{ verticalAlign: 'text-bottom', marginRight: '6px' }} /> Background Removal ON</> : <><IconCircle size={16} style={{ verticalAlign: 'text-bottom', marginRight: '6px' }} /> Enable Background Removal</>}</span>
+                      <span style={{ fontSize: '11px', opacity: 0.7 }}>{aiBackgroundRemoval ? 'tap to disable' : 'tap to enable'}</span>
+                    </button>
+
+                    {/* Fine-tune sliders — only visible when enabled */}
+                    {aiBackgroundRemoval && (
+                      <div style={{ display: 'grid', gap: '10px', marginBottom: '14px' }}>
+                        <div className="ps-slider-item">
+                          <div className="ps-slider-label"><span>Mask tolerance</span><span>{aiMaskTolerance}</span></div>
+                          <input type="range" min={12} max={80} value={aiMaskTolerance} onChange={(e) => setAiMaskTolerance(Number(e.target.value))} />
+                        </div>
+                        <div className="ps-slider-item">
+                          <div className="ps-slider-label"><span>Edge softness</span><span>{aiEdgeRefine}</span></div>
+                          <input type="range" min={4} max={40} value={aiEdgeRefine} onChange={(e) => setAiEdgeRefine(Number(e.target.value))} />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Background colour picker — always visible for non-card photos */}
+                    <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginBottom: '8px' }}>
+                      {aiBackgroundRemoval ? 'Replace removed background with:' : 'Photo background colour:'}
                     </div>
-                    <div style={{ position: 'relative' }}>
-                      <input type="color" value={tileCustomBackgroundColor} onChange={(e) => { setTileCustomBackgroundColor(e.target.value); setTileBackgroundMode('custom') }} style={{ width: '32px', height: '32px', padding: 0, border: 'none', background: 'none', cursor: 'pointer', borderRadius: '50%', overflow: 'hidden' }} />
+                    <div className="ps-swatch-row">
+                      <div
+                        onClick={() => setTileBackgroundMode('white')}
+                        className="ps-swatch-item"
+                        style={{ background: 'white', border: tileBackgroundMode === 'white' ? '2px solid var(--primary)' : '1px solid #ddd' }}
+                        title="White Background"
+                      />
+                      <div
+                        onClick={() => setTileBackgroundMode('blue')}
+                        className="ps-swatch-item"
+                        style={{ background: '#007bff', border: tileBackgroundMode === 'blue' ? '2px solid var(--primary)' : '1px solid #ddd' }}
+                        title="Blue Background"
+                      />
+                      <div
+                        onClick={() => setTileBackgroundMode('none')}
+                        className="ps-swatch-item"
+                        style={{ background: 'transparent', border: tileBackgroundMode === 'none' ? '2px solid var(--primary)' : '1px dashed #666' }}
+                        title="Transparent / None"
+                      >
+                        <IconX size={12} color="#666" />
+                      </div>
+                      <div style={{ position: 'relative' }}>
+                        <input
+                          type="color"
+                          value={tileCustomBackgroundColor}
+                          onChange={(e) => { setTileCustomBackgroundColor(e.target.value); setTileBackgroundMode('custom') }}
+                          style={{ width: '32px', height: '32px', padding: 0, border: 'none', background: 'none', cursor: 'pointer', borderRadius: '50%', overflow: 'hidden' }}
+                          title="Custom colour"
+                        />
+                      </div>
                     </div>
                   </div>
-                  <div style={{ marginTop: '16px', color: 'var(--text-main)', display: 'grid', gap: '12px', fontSize: '14px' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><input type="checkbox" checked={aiBackgroundRemoval} onChange={(e) => setAiBackgroundRemoval(e.target.checked)} /> AI-like background removal</label>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Mask tolerance</span><span>{aiMaskTolerance}</span></div><input type="range" min={12} max={80} value={aiMaskTolerance} onChange={(e) => setAiMaskTolerance(Number(e.target.value))} /></div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Edge refinement</span><span>{aiEdgeRefine}</span></div><input type="range" min={4} max={40} value={aiEdgeRefine} onChange={(e) => setAiEdgeRefine(Number(e.target.value))} /></div>
-                  </div>
-                </div>
+                )}
               </div>
             </div>
           </div>
@@ -1906,15 +2320,15 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
       {/* CARD LAYOUT MODE    */}
       {/* ------------------- */}
       {step === 'layout' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1.3fr) 1fr', gap: '24px', alignItems: 'start', width: '100%', maxHeight: 'calc(100vh - 120px)' }}>
+        <div className="ps-layout-grid">
           {/* Left Column: Layout Preview */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', height: '100%' }}>
-            <div style={{ padding: '20px', borderRadius: '16px', border: '1px solid var(--glass-border)', background: 'var(--glass)' }}>
+          <div className="ps-layout-preview-column">
+            <div className="ps-panel">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                 <h3 style={{ margin: 0, color: 'var(--text-main)', fontSize: '18px' }}>Card Layout</h3>
-                <button className="btn-secondary" style={{ padding: '8px 16px', borderRadius: '8px' }} onClick={() => setStep('edit')}>&larr; Back to Editor</button>
+                <button className="ps-btn ps-btn-secondary ps-btn-sm" onClick={() => setStep('edit')}>&larr; Back to Editor</button>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#e0e0e0', borderRadius: '12px', minHeight: '400px', border: '1px solid var(--glass-border)', overflow: 'hidden', padding: '20px', position: 'relative' }}>
+              <div className="ps-layout-canvas-box">
                 {isRendering && (
                   <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.6)', zIndex: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(2px)' }}>
                     <div style={{ width: '30px', height: '30px', border: '3px solid var(--primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
@@ -1926,25 +2340,25 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
                   <div style={{ color: '#666', textAlign: 'center' }}>Generating preview...</div>
                 )}
               </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px', gap: '8px', flexWrap: 'wrap' }}>
-                <button className="btn-secondary" style={{ padding: '6px 12px', fontSize: '12px', borderRadius: '6px' }} onClick={() => setRotationDeg((prev) => (prev - 90 + 360) % 360)} title="Rotate Anticlockwise">🔄 Rotate</button>
-                <button className="btn-primary" style={{ padding: '6px 12px', fontSize: '12px', borderRadius: '6px' }} onClick={printRenderedPreview} disabled={!renderedDataUrl || isRendering}>🖨️ Print</button>
-                <button className="btn-primary" style={{ padding: '6px 12px', fontSize: '12px', borderRadius: '6px' }} onClick={() => setShowPreview(true)} disabled={!renderedDataUrl || isRendering}>👁️ View</button>
+              <div className="ps-layout-actions-bar">
+                <button className="ps-btn ps-btn-secondary ps-btn-sm" onClick={() => setRotationDeg((prev) => (prev - 90 + 360) % 360)} title="Rotate Anticlockwise"><IconRotate size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Rotate</button>
+                <button className="ps-btn ps-btn-primary ps-btn-sm" onClick={printRenderedPreview} disabled={!renderedDataUrl || isRendering}><IconPrinter size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Print</button>
+                <button className="ps-btn ps-btn-primary ps-btn-sm" onClick={() => setShowPreview(true)} disabled={!renderedDataUrl || isRendering}><IconEye size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> View</button>
               </div>
             </div>
           </div>
 
           {/* Right Column: Layout Settings */}
-          <div className="custom-scrollbar" style={{ display: 'flex', flexDirection: 'column', gap: '16px', overflowY: 'auto', paddingRight: '8px' }}>
+          <div className="ps-layout-settings-column custom-scrollbar">
             {!['pan', 'aadhar', 'dl', 'cm_health', 'pm_health'].includes(photoSizeKey) && (
-              <div style={{ padding: '20px', borderRadius: '16px', border: '1px solid var(--glass-border)', background: 'var(--glass)' }}>
-                <h3 style={{ margin: '0 0 12px', color: 'var(--text-main)', fontSize: '16px' }}>Photo Type / Size</h3>
+              <div className="ps-panel">
+                <h3>Photo Type / Size</h3>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
                   {Object.keys(PHOTO_SIZES_CM).map((k) => (
                     <button
                       key={k}
-                      className={photoSizeKey === k ? 'btn-primary' : 'btn-secondary'}
-                      style={{ ...compactButtonStyle, padding: '8px 4px' }}
+                      className={`ps-btn ps-btn-sm ${photoSizeKey === k ? 'ps-btn-primary' : 'ps-btn-secondary'}`}
+                      style={{ padding: '8px 4px' }}
                       onClick={() => setPhotoSizeKey(k as PhotoSizeKey)}
                     >
                       {PHOTO_SIZES_CM[k as keyof typeof PHOTO_SIZES_CM].label.split(' ')[0]}
@@ -1966,52 +2380,83 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
               </div>
             )}
             {['pan', 'aadhar', 'dl', 'cm_health', 'pm_health'].includes(photoSizeKey) && (
-              <div style={{ padding: '20px', borderRadius: '16px', border: '1px solid var(--glass-border)', background: 'var(--glass)' }}>
-                <h3 style={{ margin: '0 0 16px', color: 'var(--text-main)', fontSize: '16px' }}>Card Layout Mode</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '16px' }}>
+              <div className="ps-panel">
+                <h3>Card Layout Mode</h3>
+                <div className="ps-btn-group-3col" style={{ marginBottom: '16px' }}>
                   <button
-                    className={cardLayoutMode === 'single' ? 'btn-primary' : 'btn-secondary'}
-                    style={{ ...compactButtonStyle, padding: '12px 4px' }}
+                    className={`ps-btn ps-btn-sm ${cardLayoutMode === 'single' ? 'ps-btn-primary' : 'ps-btn-secondary'}`}
+                    style={{ padding: '12px 4px' }}
                     onClick={() => setCardLayoutMode('single')}
                   >
                     1 Card (Top)
                   </button>
                   <button
-                    className={cardLayoutMode === 'dual' ? 'btn-primary' : 'btn-secondary'}
-                    style={{ ...compactButtonStyle, padding: '12px 4px' }}
+                    className={`ps-btn ps-btn-sm ${cardLayoutMode === 'dual' ? 'ps-btn-primary' : 'ps-btn-secondary'}`}
+                    style={{ padding: '12px 4px' }}
                     onClick={() => setCardLayoutMode('dual')}
                   >
-                    2 Card (Same)
+                    2 Card (Front + Back)
+                  </button>
+                  <button
+                    className={`ps-btn ps-btn-sm ${cardLayoutMode === 'duplicate' ? 'ps-btn-primary' : 'ps-btn-secondary'}`}
+                    style={{ padding: '12px 4px' }}
+                    onClick={() => setCardLayoutMode('duplicate')}
+                  >
+                    2 Copies
                   </button>
                 </div>
 
-                <h3 style={{ margin: '16px 0 12px', color: 'var(--text-main)', fontSize: '16px' }}>Card Tools</h3>
+                {cardLayoutMode !== 'dual' && (
+                  <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '13px', color: 'var(--text-main)', fontWeight: '600' }}>Print Side:</span>
+                    <div style={{ display: 'flex', gap: '6px', flex: 1 }}>
+                      <button
+                        type="button"
+                        className={`ps-btn ps-btn-sm ${singleSideChoice === 'front' ? 'ps-btn-primary' : 'ps-btn-secondary'}`}
+                        style={{ flex: 1, padding: '8px 4px' }}
+                        onClick={() => setSingleSideChoice('front')}
+                      >
+                        Front Side {frontCardImage ? <IconCheck size={14} style={{ verticalAlign: 'middle', marginLeft: '4px' }} /> : ''}
+                      </button>
+                      <button
+                        type="button"
+                        className={`ps-btn ps-btn-sm ${singleSideChoice === 'back' ? 'ps-btn-primary' : 'ps-btn-secondary'}`}
+                        style={{ flex: 1, padding: '8px 4px' }}
+                        onClick={() => setSingleSideChoice('back')}
+                      >
+                        Back Side {backCardImage ? <IconCheck size={14} style={{ verticalAlign: 'middle', marginLeft: '4px' }} /> : ''}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <h3 style={{ margin: '16px 0 12px' }}>Card Tools</h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   <button
-                    className="btn-primary"
-                    style={{ padding: '12px', width: '100%', borderRadius: '8px', background: 'linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)', color: 'white', fontWeight: 'bold' }}
+                    className="ps-btn ps-btn-primary"
+                    style={{ padding: '12px', width: '100%' }}
                     onClick={() => setCardBleed(prev => prev > 0 ? 0 : 40)}
                   >
                     {cardBleed > 0 ? '- Remove Bleed Border' : '+ Extend Image Outside (Bleed)'}
                   </button>
-                  {cardLayoutMode === 'dual' && (
-                    <button
-                      className="btn-primary"
-                      style={{ padding: '12px', width: '100%', borderRadius: '8px', background: 'linear-gradient(135deg, #3d5afe 0%, #536dfe 100%)', color: 'white', fontWeight: 'bold' }}
-                      onClick={() => {
+                  <button
+                    className="ps-btn ps-btn-accent"
+                    style={{ padding: '12px', width: '100%' }}
+                    onClick={() => {
+                      if (isDualCard) {
                         setActiveCropSide('front')
-                        setShowManualCrop(true)
-                      }}
-                    >
-                      ✂️ Manual Crop (Front/Back)
-                    </button>
-                  )}
+                      }
+                      setShowManualCrop(true)
+                    }}
+                  >
+                    <IconCrop size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Manual Crop {cardLayoutMode === 'dual' ? '(Front/Back)' : `(${singleSideChoice === 'front' ? 'Front Side' : 'Back Side'})`}
+                  </button>
                 </div>
               </div>
             )}
             {!['pan', 'aadhar', 'dl', 'cm_health', 'pm_health'].includes(photoSizeKey) && (
-              <div style={{ padding: '20px', borderRadius: '16px', border: '1px solid var(--glass-border)', background: 'var(--glass)' }}>
-                <h3 style={{ margin: '0 0 16px', color: 'var(--text-main)', fontSize: '16px' }}>Card Size & Grid</h3>
+              <div className="ps-panel">
+                <h3>Card Size & Grid</h3>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                   <select
                     className="input-field"
@@ -2036,11 +2481,11 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
               </div>
             )}
 
-            <div style={{ padding: '20px', borderRadius: '16px', border: '1px solid var(--glass-border)', background: 'var(--glass)' }}>
-              <h3 style={{ margin: '0 0 16px', color: 'var(--text-main)', fontSize: '16px' }}>Photo Border</h3>
+            <div className="ps-panel">
+              <h3>Photo Border</h3>
               <div style={{ color: 'var(--text-main)', display: 'grid', gap: '12px', fontSize: '14px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Border Width</span><span>{photoBorderWidth}px</span></div>
+                <div className="ps-slider-item">
+                  <div className="ps-slider-label"><span>Border Width</span><span>{photoBorderWidth}px</span></div>
                   <input type="range" min={0} max={15} value={photoBorderWidth} onChange={(e) => setPhotoBorderWidth(Number(e.target.value))} />
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2050,13 +2495,13 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
               </div>
             </div>
 
-            <div style={{ padding: '20px', borderRadius: '16px', border: '1px solid var(--glass-border)', background: 'var(--glass)' }}>
-              <h3 style={{ margin: '0 0 16px', color: 'var(--text-main)', fontSize: '16px' }}>Cutting Marks & Print Area</h3>
+            <div className="ps-panel">
+              <h3>Cutting Marks & Print Area</h3>
               <div style={{ color: 'var(--text-main)', display: 'grid', gap: '12px', fontSize: '14px' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><input type="checkbox" checked={showCuttingMarks} onChange={(e) => setShowCuttingMarks(e.target.checked)} /> Show cutting guides</label>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><input type="checkbox" checked={showSafeArea} onChange={(e) => setShowSafeArea(e.target.checked)} /> Print-safe area indicator</label>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '8px' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Margin</span><span>{marginPx}px</span></div><input type="range" min={6} max={80} value={marginPx} onChange={(e) => setMarginPx(Number(e.target.value))} /></div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Spacing</span><span>{gapPx}px</span></div><input type="range" min={0} max={40} value={gapPx} onChange={(e) => setGapPx(Number(e.target.value))} /></div>
+                <div className="ps-slider-item" style={{ marginTop: '8px' }}><div className="ps-slider-label"><span>Margin</span><span>{marginPx}px</span></div><input type="range" min={6} max={80} value={marginPx} onChange={(e) => setMarginPx(Number(e.target.value))} /></div>
+                <div className="ps-slider-item"><div className="ps-slider-label"><span>Spacing</span><span>{gapPx}px</span></div><input type="range" min={0} max={40} value={gapPx} onChange={(e) => setGapPx(Number(e.target.value))} /></div>
               </div>
             </div>
           </div>
@@ -2070,99 +2515,181 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
 
       {/* MANUAL CROP OVERLAY */}
       {showManualCrop && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.9)', zIndex: 1400, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
-          <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', display: 'flex', flexDirection: 'column', alignItems: 'center', maxWidth: '100%', maxHeight: '100%' }}>
-            <h3 style={{ margin: '0 0 16px 0', color: '#111' }}>Manual Crop Overlay</h3>
-            {isDualCard && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', marginBottom: '16px', width: '100%' }}>
-                <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', width: '100%', flexWrap: 'wrap' }}>
+        <div className="ps-crop-overlay">
+          <div className="ps-crop-card">
+            {/* Header Bar */}
+            <div className="ps-crop-header-bar">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <h3 className="ps-crop-title"><IconCrop size={20} style={{ verticalAlign: 'text-bottom', marginRight: '6px' }} /> Manual Crop Overlay</h3>
+                {detectionMessage && (
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: '500' }}>
+                    {detectionMessage}
+                  </span>
+                )}
+              </div>
+
+              {/* Side Selection Tabs (Dual Card Mode) */}
+              {isDualCard && (
+                <div className="ps-crop-tabs-group">
                   <button
                     type="button"
-                    onClick={() => setActiveCropSide('front')}
-                    style={{
-                      padding: '8px 20px',
-                      borderRadius: '8px',
-                      border: '1px solid #ccc',
-                      background: activeCropSide === 'front' ? '#0ea5e9' : '#f3f4f6',
-                      color: activeCropSide === 'front' ? '#fff' : '#111',
-                      fontWeight: 'bold',
-                      cursor: 'pointer'
-                    }}
+                    onClick={() => scrollToCropSide('front')}
+                    className={`ps-crop-tab-btn ${activeCropSide === 'front' ? 'active' : ''}`}
                   >
-                    Front Side {frontCardImage ? '✅' : ''}
+                    Front Side {frontCardImage ? <IconCheck size={14} style={{ verticalAlign: 'middle', marginLeft: '4px' }} /> : ''}
                   </button>
                   <button
                     type="button"
-                    onClick={() => setActiveCropSide('back')}
-                    style={{
-                      padding: '8px 20px',
-                      borderRadius: '8px',
-                      border: '1px solid #ccc',
-                      background: activeCropSide === 'back' ? '#0ea5e9' : '#f3f4f6',
-                      color: activeCropSide === 'back' ? '#fff' : '#111',
-                      fontWeight: 'bold',
-                      cursor: 'pointer'
-                    }}
+                    onClick={() => scrollToCropSide('back')}
+                    className={`ps-crop-tab-btn ${activeCropSide === 'back' ? 'active' : ''}`}
                   >
-                    Back Side {backCardImage ? '✅' : ''}
+                    Back Side {backCardImage ? <IconCheck size={14} style={{ verticalAlign: 'middle', marginLeft: '4px' }} /> : ''}
                   </button>
                   <button
                     type="button"
                     onClick={handleAutoDetect}
                     disabled={isDetecting}
-                    style={{
-                      padding: '8px 20px',
-                      borderRadius: '8px',
-                      border: '1px solid #d97706',
-                      background: '#d97706',
-                      color: '#fff',
-                      fontWeight: 'bold',
-                      cursor: 'pointer',
-                      opacity: isDetecting ? 0.6 : 1
-                    }}
+                    className="ps-crop-autodetect-btn"
                   >
-                    {isDetecting ? '🔍 Detecting...' : '🔍 Auto-Detect'}
+                    {isDetecting ? <><IconSearch size={14} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Detecting...</> : <><IconSearch size={14} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Auto-Detect</>}
                   </button>
                 </div>
-                {detectionMessage && (
-                  <div style={{ fontSize: '13px', color: '#374151', fontWeight: '500', textAlign: 'center' }}>
-                    {detectionMessage}
-                  </div>
-                )}
+              )}
+
+              {/* Aspect Ratio Lock Controls for Passport/Stamp/Custom Photos */}
+              {!isCard && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Ratio:</span>
+                  <button
+                    type="button"
+                    className={`ps-btn ps-btn-sm ${cropAspectMode === 'original' ? 'ps-btn-primary' : 'ps-btn-secondary'}`}
+                    onClick={() => {
+                      setCropAspectMode('original')
+                      setCrop({ x: 0, y: 0 })
+                      setCompletedCrop(null)
+                    }}
+                    style={{ padding: '4px 10px', fontSize: '11px' }}
+                    title="Lock to original photo proportions"
+                  >
+                    Original Ratio
+                  </button>
+                  <button
+                    type="button"
+                    className={`ps-btn ps-btn-sm ${cropAspectMode === 'target' ? 'ps-btn-primary' : 'ps-btn-secondary'}`}
+                    onClick={() => {
+                      setCropAspectMode('target')
+                      setCrop({ x: 0, y: 0 })
+                      setCompletedCrop(null)
+                    }}
+                    style={{ padding: '4px 10px', fontSize: '11px' }}
+                    title="Lock to output crop proportions (e.g. 3.5x4.5)"
+                  >
+                    Target Ratio
+                  </button>
+                  <button
+                    type="button"
+                    className={`ps-btn ps-btn-sm ${cropAspectMode === 'free' ? 'ps-btn-primary' : 'ps-btn-secondary'}`}
+                    onClick={() => setCropAspectMode('free')}
+                    style={{ padding: '4px 10px', fontSize: '11px' }}
+                    title="Crop to any freeform shape"
+                  >
+                    Free Form
+                  </button>
+                </div>
+              )}
+
+              {/* Zoom Control with Presets */}
+              <div className="ps-crop-zoom-bar">
+                <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-main)', whiteSpace: 'nowrap' }}>
+                  <IconSearch size={14} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Zoom: {isCard ? (isDualCard ? (activeCropSide === 'front' ? frontZoom : backZoom) : (singleSideChoice === 'front' ? frontZoom : backZoom)) : zoom}x
+                </span>
+                <input
+                  type="range"
+                  min={1}
+                  max={3}
+                  step={0.1}
+                  value={isCard ? (isDualCard ? (activeCropSide === 'front' ? frontZoom : backZoom) : (singleSideChoice === 'front' ? frontZoom : backZoom)) : zoom}
+                  onChange={(e) => {
+                    const val = Number(e.target.value)
+                    if (isCard) {
+                      const side = isDualCard ? activeCropSide : singleSideChoice
+                      if (side === 'front') setFrontZoom(val)
+                      else setBackZoom(val)
+                    } else {
+                      setZoom(val)
+                    }
+                  }}
+                  style={{ width: '130px', cursor: 'pointer' }}
+                />
               </div>
-            )}
-            <div style={{ overflow: 'auto', maxWidth: '90vw', maxHeight: '70vh', background: '#e0e0e0', border: '1px solid #ccc' }}>
-              <ReactCrop
-                crop={isDualCard ? (activeCropSide === 'front' ? frontCrop : backCrop) : crop}
-                onChange={(c) => {
-                  if (isDualCard) {
-                    if (activeCropSide === 'front') setFrontCrop(c)
-                    else setBackCrop(c)
-                  } else {
-                    setCrop(c)
-                  }
-                }}
-                onComplete={(c) => {
-                  if (isDualCard) {
-                    if (activeCropSide === 'front') setFrontCompletedCrop(c)
-                    else setBackCompletedCrop(c)
-                  } else {
-                    setCompletedCrop(c)
-                  }
-                }}
-                aspect={isDualCard ? 85.6 / 54 : undefined}
-              >
-                <img ref={cropImageRef} src={isDualCard ? (activeCropSide === 'front' ? (frontSourceImage || uploadedImage) : (backSourceImage || uploadedImage)) : uploadedImage} alt="Crop" style={{ maxWidth: '100%', maxHeight: '70vh', objectFit: 'contain' }} />
-              </ReactCrop>
             </div>
-            <div style={{ display: 'flex', gap: '12px', marginTop: '20px', width: '100%', justifyContent: 'flex-end' }}>
-              <button className="btn-secondary" style={{ padding: '8px 24px', borderRadius: '8px', color: '#111', border: '1px solid #ccc' }} onClick={() => setShowManualCrop(false)}>Cancel</button>
-              <button className="btn-primary" style={{ padding: '8px 24px', borderRadius: '8px', fontWeight: 'bold' }} onClick={applyManualCrop}>Apply Crop</button>
+
+            {/* Viewport Container for react-easy-crop */}
+            <div className="ps-crop-viewport" style={{ position: 'relative', overflow: 'hidden' }}>
+              {(() => {
+                const effectiveSide = isDualCard ? activeCropSide : singleSideChoice
+                const activeCropVal = isCard ? (effectiveSide === 'front' ? frontCrop : backCrop) : crop
+                const activeZoomVal = isCard ? (effectiveSide === 'front' ? frontZoom : backZoom) : zoom
+                const activeSourceImg = isDualCard ? (fullPageSourceImage || uploadedImage) : (isCard ? (effectiveSide === 'front' ? (frontSourceImage || uploadedImage) : (backSourceImage || uploadedImage)) : uploadedImage)
+
+                const cropAspectVal = (() => {
+                  if (isCard) {
+                    return 85.6 / 54 // CR80 ratio
+                  }
+                  if (cropAspectMode === 'original') {
+                    return originalImageAspect || 1
+                  }
+                  if (cropAspectMode === 'target') {
+                    return activePhotoSize.widthCm / activePhotoSize.heightCm
+                  }
+                  return 1
+                })()
+
+                return (
+                  <Cropper
+                    key={isCard ? effectiveSide : 'generic'}
+                    image={activeSourceImg}
+                    crop={activeCropVal}
+                    zoom={activeZoomVal}
+                    aspect={cropAspectVal}
+                    onCropChange={(c) => {
+                      if (isCard) {
+                        if (effectiveSide === 'front') setFrontCrop(c)
+                        else setBackCrop(c)
+                      } else {
+                        setCrop(c)
+                      }
+                    }}
+                    onZoomChange={(z) => {
+                      if (isCard) {
+                        if (effectiveSide === 'front') setFrontZoom(z)
+                        else setBackZoom(z)
+                      } else {
+                        setZoom(z)
+                      }
+                    }}
+                    onCropComplete={(_, croppedPixels) => {
+                      if (isCard) {
+                        if (effectiveSide === 'front') setFrontCompletedCrop(croppedPixels)
+                        else setBackCompletedCrop(croppedPixels)
+                      } else {
+                        setCompletedCrop(croppedPixels)
+                      }
+                    }}
+                  />
+                )
+              })()}
+            </div>
+
+
+            {/* Footer Bar */}
+            <div className="ps-crop-footer">
+              <button className="ps-btn ps-btn-secondary" onClick={() => setShowManualCrop(false)}>Cancel</button>
+              <button className="ps-btn ps-btn-primary" onClick={applyManualCrop}>Apply Crop</button>
             </div>
           </div>
         </div>
       )}
-
 
       {showPreview && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.85)', zIndex: 1300, display: 'grid', placeItems: 'center' }}>
@@ -2177,7 +2704,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
               <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>Generate output to preview the photo card.</div>
             )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px' }}>
-              <button className="btn-primary" style={{ padding: '10px 20px', borderRadius: '8px' }} onClick={() => setShowPreview(false)}>Close</button>
+              <button className="ps-btn ps-btn-primary" onClick={() => setShowPreview(false)}>Close</button>
             </div>
           </div>
         </div>

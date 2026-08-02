@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from 'react'
 import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
+import { IconEye, IconPlus, IconWarning, IconCheck, IconArrowLeft, IconHourglass, IconDownload, IconPrinter, IconFile, IconEdit, IconFileText } from './Icons'
 
 // CDN libraries loaded dynamically — no npm install required
 const JSZIP_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'
@@ -656,7 +657,7 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
               <>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                   <h4 style={{margin: 0 }}>Profile Editor</h4>
-                  <button className="btn-primary" onClick={() => setShowPreview(true)}>👁️ Preview & Download</button>
+                  <button className="btn-primary" onClick={() => setShowPreview(true)}><IconEye size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Preview & Download</button>
                 </div>
 
               <div className="resume-two-col">
@@ -873,7 +874,7 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
                   </button>
                 </div>
               ))}
-              <button className="btn-primary" onClick={addCustomField}>➕ Add Custom Field</button>
+              <button className="btn-primary" onClick={addCustomField}><IconPlus size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Add Custom Field</button>
 
               <div className="resume-two-col">
                 <div className="form-group">
@@ -901,7 +902,7 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
                   disabled={!uploadedFileName || isParsingDoc}
                   style={(!uploadedFileName || isParsingDoc) ? { opacity: 0.5, cursor: 'not-allowed' } : {}}
                 >
-                  👁️ Preview &amp; Download
+                  <IconEye size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Preview &amp; Download
                 </button>
               </div>
               <p className="p" style={{ margin: '0 0 14px', fontSize: '13px' }}>
@@ -932,13 +933,13 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
 
               {parseError && (
                 <div style={{ padding: '12px 16px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '10px', color: '#ef4444', fontSize: '13px', marginTop: '12px' }}>
-                  ⚠️ {parseError}
+                  <IconWarning size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> {parseError}
                 </div>
               )}
 
               {!isParsingDoc && uploadedFileName && !parseError && (
                 <div style={{ padding: '12px 16px', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: '10px', color: '#10b981', fontSize: '13px', marginTop: '12px' }}>
-                  ✅ <strong>{uploadedFileName}</strong> loaded successfully.
+                  <IconCheck size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> <strong>{uploadedFileName}</strong> loaded successfully.
                   {typedModuleKey === 'resume-edit-pdf' && pdfPages.length > 0 && ` ${pdfPages.length} page(s) rendered.`}
                   {(typedModuleKey === 'resume-word-to-pdf' || typedModuleKey === 'resume-edit-word-pdf') && docBlob && ' Content extracted.'}
                   <span style={{ color: 'var(--text-muted)', display: 'block', marginTop: '4px', fontSize: '12px' }}>
@@ -953,15 +954,15 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
         ) : (
           <div className="resume-preview-pane" style={{ maxWidth: '800px', margin: '0 auto' }}>
             <div className="resume-preview-toolbar" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
-              <button className="btn-primary" onClick={() => setShowPreview(false)}>⬅️ Back to Editor</button>
+              <button className="btn-primary" onClick={() => setShowPreview(false)}><IconArrowLeft size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Back to Editor</button>
               <button
                 className="btn-primary"
                 disabled={isPdfGenerating}
                 onClick={downloadPdf}
               >
-                {isPdfGenerating ? '⏳ Saving PDF...' : '📥 Download PDF'}
+                {isPdfGenerating ? <><IconHourglass size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Saving PDF...</> : <><IconDownload size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Download PDF</>}
               </button>
-              <button className="btn-primary" onClick={printPreview}>🖨️ Print</button>
+              <button className="btn-primary" onClick={printPreview}><IconPrinter size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Print</button>
             </div>
 
             <div className="resume-sheet-scroll">
@@ -969,11 +970,11 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
               {docBlob && (
                 <div style={{ maxWidth: '800px', margin: '0 auto 12px', padding: '12px 16px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: '13px', color: 'var(--text-main)' }}>
-                    📄 Source: <strong>{uploadedFileName}</strong>
+                    <IconFile size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Source: <strong>{uploadedFileName}</strong>
                   </span>
                   {typedModuleKey === 'resume-edit-word-pdf' && (
                     <span style={{ fontSize: '12px', color: '#818cf8', fontWeight: '500' }}>
-                      ✏️ Click any text on the pages below to edit
+                      <IconEdit size={16} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} /> Click any text on the pages below to edit
                     </span>
                   )}
                 </div>
@@ -1144,7 +1145,7 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
                       ))
                     ) : (
                       <div style={{ textAlign: 'center', padding: '80px 20px', color: 'var(--text-muted)' }}>
-                        <div style={{ fontSize: '52px', marginBottom: '12px' }}>📄</div>
+                        <div style={{ marginBottom: '12px' }}><IconFile size={52} /></div>
                         <p style={{ margin: 0, fontSize: '13px' }}>No PDF loaded. Go back and upload a PDF file.</p>
                       </div>
                     )
@@ -1155,7 +1156,7 @@ const ResumeServiceModule = ({ moduleKey, serviceFee, onBack }: ResumeServiceMod
                   ) : (
                     // Empty state before upload
                     <div style={{ textAlign: 'center', padding: '80px 20px', color: '#94a3b8' }}>
-                      <div style={{ fontSize: '48px', marginBottom: '12px' }}>📝</div>
+                      <div style={{ marginBottom: '12px' }}><IconFileText size={48} /></div>
                       <p style={{ margin: 0, fontSize: '12px' }}>Upload a Word document to see its content here.</p>
                     </div>
                   )}
