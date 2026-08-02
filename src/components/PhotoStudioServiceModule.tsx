@@ -2506,7 +2506,6 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
                   <input type="checkbox" checked={fillRemainingWithBatch} onChange={(e) => setFillRemainingWithBatch(e.target.checked)} /> Fill remaining spaces with next batch photos
                 </label>
               </div>
-            )}
 
             <div className="ps-panel">
               <h3>Photo Border</h3>
@@ -2531,6 +2530,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
                 <div className="ps-slider-item"><div className="ps-slider-label"><span>Spacing</span><span>{gapPx}px</span></div><input type="range" min={0} max={40} value={gapPx} onChange={(e) => setGapPx(Number(e.target.value))} /></div>
               </div>
             </div>
+            )}
           </div>
         </div>
       )}
