@@ -522,7 +522,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
 
   const applyManualCrop = async () => {
     const effectiveSide = isDualCard ? activeCropSide : singleSideChoice
-    
+
     let activeSourceImg = uploadedImage
     if (isCard) {
       if (fullPageSourceImage) {
@@ -1079,7 +1079,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
 
         const finalDataUrl = printCanvas.toDataURL('image/jpeg', 0.95)
         setRenderedDataUrl(finalDataUrl)
-        
+
         resetEditorState()
         setUploadedImage(frontDataUrl)
         setFrontCardImage(frontDataUrl)
@@ -1697,7 +1697,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
           }
 
           const cardX = (paperW - photoW) / 2
-          const slotY = i === 0 ? 131 : 1031
+          const slotY = i === 0 ? marginPx : marginPx + photoH + gapPx
 
           const slotSource = sourceCache.get(slotSources[i]) || sourceCache.get(sourceDataUrl)
           if (!slotSource) continue
@@ -1753,8 +1753,21 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
             ctx.stroke()
           }
 
+          if (photoBorderWidth > 0) {
+            ctx.strokeStyle = photoBorderColor
+            ctx.lineWidth = photoBorderWidth
+            ctx.strokeRect(drawX - photoBorderWidth / 2, drawY - photoBorderWidth / 2, drawW + photoBorderWidth, drawH + photoBorderWidth)
+          }
+
+          if (showCuttingMarks) {
+            drawCutGuides(ctx, drawX, drawY, drawW, drawH)
+            ctx.strokeStyle = 'rgba(200, 200, 200, 0.8)'
+            ctx.lineWidth = 1
+            ctx.strokeRect(drawX - 2, drawY - 2, drawW + 4, drawH + 4)
+          }
+
           if (cardLayoutMode === 'dual' && i === count - 1) {
-            const midY = paperH / 2
+            const midY = drawY - gapPx / 2
             ctx.save()
             ctx.beginPath()
             ctx.moveTo(20, midY)
@@ -1880,7 +1893,9 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     cardBleed,
     frontCardImage,
     backCardImage,
-    singleSideChoice
+    singleSideChoice,
+    photoBorderWidth,
+    photoBorderColor
   ])
 
   const printRenderedPreview = async () => {
@@ -2506,30 +2521,34 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
                   <input type="checkbox" checked={fillRemainingWithBatch} onChange={(e) => setFillRemainingWithBatch(e.target.checked)} /> Fill remaining spaces with next batch photos
                 </label>
               </div>
+            )}
 
-            <div className="ps-panel">
-              <h3>Photo Border</h3>
-              <div style={{ color: 'var(--text-main)', display: 'grid', gap: '12px', fontSize: '14px' }}>
-                <div className="ps-slider-item">
-                  <div className="ps-slider-label"><span>Border Width</span><span>{photoBorderWidth}px</span></div>
-                  <input type="range" min={0} max={15} value={photoBorderWidth} onChange={(e) => setPhotoBorderWidth(Number(e.target.value))} />
+            {!isCard && (
+              <>
+                <div className="ps-panel">
+                  <h3>Photo Border</h3>
+                  <div style={{ color: 'var(--text-main)', display: 'grid', gap: '12px', fontSize: '14px' }}>
+                    <div className="ps-slider-item">
+                      <div className="ps-slider-label"><span>Border Width</span><span>{photoBorderWidth}px</span></div>
+                      <input type="range" min={0} max={15} value={photoBorderWidth} onChange={(e) => setPhotoBorderWidth(Number(e.target.value))} />
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>Border Color</span>
+                      <input type="color" value={photoBorderColor} onChange={(e) => setPhotoBorderColor(e.target.value)} style={{ width: '40px', height: '24px', padding: 0, border: 'none', background: 'none' }} />
+                    </div>
+                  </div>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span>Border Color</span>
-                  <input type="color" value={photoBorderColor} onChange={(e) => setPhotoBorderColor(e.target.value)} style={{ width: '40px', height: '24px', padding: 0, border: 'none', background: 'none' }} />
-                </div>
-              </div>
-            </div>
 
-            <div className="ps-panel">
-              <h3>Cutting Marks & Print Area</h3>
-              <div style={{ color: 'var(--text-main)', display: 'grid', gap: '12px', fontSize: '14px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><input type="checkbox" checked={showCuttingMarks} onChange={(e) => setShowCuttingMarks(e.target.checked)} /> Show cutting guides</label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><input type="checkbox" checked={showSafeArea} onChange={(e) => setShowSafeArea(e.target.checked)} /> Print-safe area indicator</label>
-                <div className="ps-slider-item" style={{ marginTop: '8px' }}><div className="ps-slider-label"><span>Margin</span><span>{marginPx}px</span></div><input type="range" min={6} max={80} value={marginPx} onChange={(e) => setMarginPx(Number(e.target.value))} /></div>
-                <div className="ps-slider-item"><div className="ps-slider-label"><span>Spacing</span><span>{gapPx}px</span></div><input type="range" min={0} max={40} value={gapPx} onChange={(e) => setGapPx(Number(e.target.value))} /></div>
-              </div>
-            </div>
+                <div className="ps-panel">
+                  <h3>Cutting Marks & Print Area</h3>
+                  <div style={{ color: 'var(--text-main)', display: 'grid', gap: '12px', fontSize: '14px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><input type="checkbox" checked={showCuttingMarks} onChange={(e) => setShowCuttingMarks(e.target.checked)} /> Show cutting guides</label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><input type="checkbox" checked={showSafeArea} onChange={(e) => setShowSafeArea(e.target.checked)} /> Print-safe area indicator</label>
+                    <div className="ps-slider-item" style={{ marginTop: '8px' }}><div className="ps-slider-label"><span>Margin</span><span>{marginPx}px</span></div><input type="range" min={6} max={80} value={marginPx} onChange={(e) => setMarginPx(Number(e.target.value))} /></div>
+                    <div className="ps-slider-item"><div className="ps-slider-label"><span>Spacing</span><span>{gapPx}px</span></div><input type="range" min={0} max={40} value={gapPx} onChange={(e) => setGapPx(Number(e.target.value))} /></div>
+                  </div>
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -2657,7 +2676,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
                 const effectiveSide = isDualCard ? activeCropSide : singleSideChoice
                 const activeCropVal = isCard ? (effectiveSide === 'front' ? frontCrop : backCrop) : crop
                 const activeZoomVal = isCard ? (effectiveSide === 'front' ? frontZoom : backZoom) : zoom
-                
+
                 let activeSourceImg = uploadedImage
                 if (isCard) {
                   if (fullPageSourceImage) {
