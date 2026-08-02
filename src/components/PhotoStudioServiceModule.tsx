@@ -1697,7 +1697,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
           }
 
           const cardX = (paperW - photoW) / 2
-          const slotY = i === 0 ? marginPx : marginPx + photoH + gapPx
+          const slotY = i === 0 ? 131 : 1031
 
           const slotSource = sourceCache.get(slotSources[i]) || sourceCache.get(sourceDataUrl)
           if (!slotSource) continue
@@ -1753,21 +1753,8 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
             ctx.stroke()
           }
 
-          if (photoBorderWidth > 0) {
-            ctx.strokeStyle = photoBorderColor
-            ctx.lineWidth = photoBorderWidth
-            ctx.strokeRect(drawX - photoBorderWidth / 2, drawY - photoBorderWidth / 2, drawW + photoBorderWidth, drawH + photoBorderWidth)
-          }
-
-          if (showCuttingMarks) {
-            drawCutGuides(ctx, drawX, drawY, drawW, drawH)
-            ctx.strokeStyle = 'rgba(200, 200, 200, 0.8)'
-            ctx.lineWidth = 1
-            ctx.strokeRect(drawX - 2, drawY - 2, drawW + 4, drawH + 4)
-          }
-
           if (cardLayoutMode === 'dual' && i === count - 1) {
-            const midY = drawY - gapPx / 2
+            const midY = paperH / 2
             ctx.save()
             ctx.beginPath()
             ctx.moveTo(20, midY)
@@ -1893,9 +1880,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     cardBleed,
     frontCardImage,
     backCardImage,
-    singleSideChoice,
-    photoBorderWidth,
-    photoBorderColor
+    singleSideChoice
   ])
 
   const printRenderedPreview = async () => {
