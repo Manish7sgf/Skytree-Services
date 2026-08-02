@@ -47,6 +47,13 @@ interface BatchImage {
   id: string
   name: string
   dataUrl: string
+  adjustments?: {
+    cropZoom: number
+    offsetX: number
+    offsetY: number
+    headAlign: number
+    photoEditor: PhotoEditorState
+  }
 }
 
 const DPI = 300
@@ -642,7 +649,20 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
   const [aiMaskTolerance, setAiMaskTolerance] = useState(36)
   const [aiEdgeRefine, setAiEdgeRefine] = useState(14)
 
+  useEffect(() => {
+    setBatchImages(prev => prev.map((img, i) => {
+      if (i === activeBatchIndex) {
+        return {
+          ...img,
+          adjustments: { cropZoom, offsetX, offsetY, headAlign, photoEditor }
+        }
+      }
+      return img
+    }))
+  }, [cropZoom, offsetX, offsetY, headAlign, photoEditor, activeBatchIndex])
+
   const [pdfPassword, setPdfPassword] = useState('')
+  const [pdfPasswordError, setPdfPasswordError] = useState('')
   const [showPasswordPrompt, setShowPasswordPrompt] = useState(false)
   const [pendingPdfFile, setPendingPdfFile] = useState<File | null>(null)
   const [isProcessingPdf, setIsProcessingPdf] = useState(false)
@@ -738,13 +758,13 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
 
   const activeBackgroundColor = '#ffffff'
 
-  const getFilterString = () => {
+  const getFilterString = (editor: PhotoEditorState = photoEditor) => {
     const filters = [
-      `brightness(${photoEditor.brightness}%)`,
-      `contrast(${photoEditor.contrast}%)`,
-      `saturate(${photoEditor.saturation}%)`,
-      `hue-rotate(${photoEditor.hueRotation}deg)`,
-      photoEditor.blur > 0 ? `blur(${(photoEditor.blur / 10).toFixed(1)}px)` : '',
+      `brightness(${editor.brightness}%)`,
+      `contrast(${editor.contrast}%)`,
+      `saturate(${editor.saturation}%)`,
+      `hue-rotate(${editor.hueRotation}deg)`,
+      editor.blur > 0 ? `blur(${(editor.blur / 10).toFixed(1)}px)` : '',
       noiseReduction > 0 ? `blur(${(noiseReduction / 20).toFixed(1)}px)` : '',
       skinSmoothing > 0 ? `contrast(${100 - skinSmoothing / 3}%)` : '',
     ]
@@ -791,6 +811,13 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
 
   const applyCoolTone = () => {
     setPhotoEditor((prev) => ({ ...prev, hueRotation: -8, saturation: 104 }))
+  }
+
+  const applyAdjustmentsToAll = () => {
+    setBatchImages(prev => prev.map(img => ({
+      ...img,
+      adjustments: { cropZoom, offsetX, offsetY, headAlign, photoEditor }
+    })))
   }
 
   // Reset all editor state when a new file is uploaded
@@ -889,6 +916,7 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
       if (isEncrypted) {
         // PDF is encrypted / password protected! Prompt user for password!
         setShowPasswordPrompt(true)
+        setPdfPasswordError('')
         setIsProcessingPdf(false)
       } else {
         // PDF is UNENCRYPTED! Process immediately with empty password!
@@ -970,7 +998,8 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
         pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer, password }).promise
       } catch (err: any) {
         if (err.name === 'PasswordException' || err.message?.includes('password')) {
-          alert('Incorrect password. Please try again.')
+          setPdfPasswordError('Incorrect password. Please try again.')
+          setPdfPassword('')
           setShowPasswordPrompt(true)
           setIsProcessingPdf(false)
           return
@@ -1093,14 +1122,16 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
         setActiveBatchIndex(0)
         setStep('layout')
         setShowPreview(true)
+        setPendingPdfFile(null)
+        setPdfPassword('')
       }
     } catch (err) {
       console.error('PAN PDF Error:', err)
       alert('Failed to process PAN PDF.')
-    } finally {
-      setIsProcessingPdf(false)
       setPendingPdfFile(null)
       setPdfPassword('')
+    } finally {
+      setIsProcessingPdf(false)
     }
   }
 
@@ -1129,7 +1160,8 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
         pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer, password }).promise
       } catch (err: any) {
         if (err.name === 'PasswordException' || err.message?.includes('password')) {
-          alert('Incorrect password. For Aadhaar PDF, password is first 4 letters of your name in CAPITALS followed by birth year (e.g. RAME1990).')
+          setPdfPasswordError('Incorrect password. For Aadhaar PDF, password is first 4 letters of your name in CAPITALS followed by birth year (e.g. RAME1990).')
+          setPdfPassword('')
           setShowPasswordPrompt(true)
           setIsProcessingPdf(false)
           return
@@ -1232,13 +1264,15 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
       setActiveBatchIndex(0)
       setStep('layout')
       setShowPreview(false)
+      setPendingPdfFile(null)
+      setPdfPassword('')
     } catch (err) {
       console.error('Aadhaar PDF Error:', err)
       alert('Failed to process Aadhaar PDF. Please check the file and password.')
-    } finally {
-      setIsProcessingPdf(false)
       setPendingPdfFile(null)
       setPdfPassword('')
+    } finally {
+      setIsProcessingPdf(false)
     }
   }
 
@@ -1247,6 +1281,21 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
     if (!item) return
     setActiveBatchIndex(index)
     setUploadedImage(item.dataUrl)
+    
+    if (item.adjustments) {
+      setCropZoom(item.adjustments.cropZoom)
+      setOffsetX(item.adjustments.offsetX)
+      setOffsetY(item.adjustments.offsetY)
+      setHeadAlign(item.adjustments.headAlign)
+      setPhotoEditor(item.adjustments.photoEditor)
+    } else {
+      setCropZoom(1.0)
+      setOffsetX(0)
+      setOffsetY(0)
+      setHeadAlign(45)
+      setPhotoEditor(defaultEditor)
+    }
+
     if (isCard) {
       if (index === 0) setEditorActiveSide('front')
       else if (index === 1) setEditorActiveSide('back')
@@ -1689,6 +1738,16 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
       ctx.filter = getFilterString()
       for (let i = 0; i < count; i++) {
         const isCard = ['pan', 'aadhar', 'dl', 'cm_health', 'pm_health'].includes(photoSizeKey)
+        let adj = { cropZoom, offsetX, offsetY, headAlign, photoEditor }
+        if (isCard) {
+          const batchItem = batchImages[i]
+          if (batchItem?.adjustments) adj = batchItem.adjustments
+        } else {
+          if (fillRemainingWithBatch && batchImages.length > 0) {
+            const batchItem = batchImages[i % batchImages.length]
+            if (batchItem?.adjustments) adj = batchItem.adjustments
+          }
+        }
 
         if (isCard) {
           if (i === 0) {
@@ -1712,10 +1771,10 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
           const drawY = slotY + (photoH - drawH) / 2
 
           ctx.save()
-          if (photoEditor.sharpness > 0) {
-            ctx.filter = `${getFilterString()} contrast(${100 + photoEditor.sharpness}%)`
+          if (adj.photoEditor.sharpness > 0) {
+            ctx.filter = `${getFilterString(adj.photoEditor)} contrast(${100 + adj.photoEditor.sharpness}%)`
           } else {
-            ctx.filter = getFilterString()
+            ctx.filter = getFilterString(adj.photoEditor)
           }
 
           if (cardBleed > 0) {
@@ -1746,11 +1805,22 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
           ctx.drawImage(slotNode, 0, 0, slotWidth, slotHeight, drawX, drawY, drawW, drawH)
           ctx.restore()
 
-          if (!forPrint) {
+          if (photoBorderWidth > 0) {
+            ctx.strokeStyle = photoBorderColor
+            ctx.lineWidth = photoBorderWidth
+            ctx.strokeRect(drawX - photoBorderWidth / 2, drawY - photoBorderWidth / 2, drawW + photoBorderWidth, drawH + photoBorderWidth)
+          } else if (!forPrint) {
             ctx.strokeStyle = 'rgba(0,0,0,0.45)'
             ctx.lineWidth = 1
             drawRoundedRect(ctx, drawX, drawY, drawW, drawH, 20)
             ctx.stroke()
+          }
+
+          if (showCuttingMarks) {
+            drawCutGuides(ctx, drawX, drawY, drawW, drawH)
+            ctx.strokeStyle = 'rgba(200, 200, 200, 0.8)'
+            ctx.lineWidth = 1
+            ctx.strokeRect(drawX - 2, drawY - 2, drawW + 4, drawH + 4)
           }
 
           if (cardLayoutMode === 'dual' && i === count - 1) {
@@ -1798,14 +1868,16 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
           ctx.fillRect(x, y, photoW, photoH)
         }
 
+        ctx.filter = getFilterString(adj.photoEditor)
+
         const sourceAspect = slotWidth / slotHeight
         const targetAspect = photoW / photoH
         const coverW = sourceAspect > targetAspect ? slotHeight * targetAspect : slotWidth
         const coverH = sourceAspect > targetAspect ? slotHeight : slotWidth / targetAspect
 
-        const centerX = slotWidth / 2 + offsetX * (slotWidth * 0.25)
-        const centerY = slotHeight * (headAlign / 100) + offsetY * (slotHeight * 0.25)
-        const zoom = Math.max(1, cropZoom)
+        const centerX = slotWidth / 2 + adj.offsetX * (slotWidth * 0.25)
+        const centerY = slotHeight * (adj.headAlign / 100) + adj.offsetY * (slotHeight * 0.25)
+        const zoom = Math.max(1, adj.cropZoom)
         const sx = Math.max(0, centerX - coverW / (2 * zoom))
         const sy = Math.max(0, centerY - coverH / (2 * zoom))
         const sw = Math.min(slotWidth - sx, coverW / zoom)
@@ -2005,16 +2077,22 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
                 : 'Password format: Date of Birth in DDMMYYYY format. Example: 15031985'}
             </p>
             <input
+              autoFocus
               type="password"
               value={pdfPassword}
-              onChange={(e) => setPdfPassword(e.target.value)}
+              onChange={(e) => { setPdfPassword(e.target.value); setPdfPasswordError(''); }}
               placeholder={pdfType === 'aadhar' ? 'e.g. RAME1990' : 'e.g. 15031985'}
               className="input-field"
-              style={{ marginBottom: '20px', textAlign: 'center', letterSpacing: '0.1em' }}
+              style={{ marginBottom: pdfPasswordError ? '12px' : '20px', textAlign: 'center', letterSpacing: '0.1em' }}
               onKeyDown={(e) => e.key === 'Enter' && (pdfType === 'aadhar' ? processAadhaarPdf(pdfPassword) : processPanPdf(pdfPassword))}
             />
+            {pdfPasswordError && (
+              <div style={{ color: '#ef4444', fontSize: '13px', marginBottom: '20px', fontWeight: '500' }}>
+                {pdfPasswordError}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: '12px' }}>
-              <button className="ps-btn ps-btn-secondary" style={{ flex: 1 }} onClick={() => { setShowPasswordPrompt(false); setPendingPdfFile(null); }}>Cancel</button>
+              <button className="ps-btn ps-btn-secondary" style={{ flex: 1 }} onClick={() => { setShowPasswordPrompt(false); setPendingPdfFile(null); setPdfPasswordError(''); }}>Cancel</button>
               <button className="ps-btn ps-btn-primary" style={{ flex: 1 }}
                 onClick={() => pdfType === 'aadhar' ? processAadhaarPdf(pdfPassword) : processPanPdf(pdfPassword)}
                 disabled={isProcessingPdf}>
@@ -2229,7 +2307,18 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
                 )}
 
                 <div className="ps-control-section">
-                  <h3 className="ps-control-heading">Adjustments & Crop</h3>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h3 className="ps-control-heading" style={{ marginBottom: 0 }}>Adjustments & Crop</h3>
+                    {batchImages.length > 1 && (
+                      <button 
+                        className="ps-btn ps-btn-secondary" 
+                        style={{ padding: '4px 8px', fontSize: '11px', whiteSpace: 'nowrap' }} 
+                        onClick={applyAdjustmentsToAll}
+                      >
+                        Apply to {isDualCard ? 'Both' : 'All'}
+                      </button>
+                    )}
+                  </div>
                   <div className="ps-slider-stack">
                     <div className="ps-slider-item"><div className="ps-slider-label"><span>Crop Zoom</span><span>{cropZoom.toFixed(2)}x</span></div><input type="range" min={1} max={2.5} step={0.01} value={cropZoom} onChange={(e) => setCropZoom(Number(e.target.value))} /></div>
                     <div className="ps-slider-item"><div className="ps-slider-label"><span>Horizontal shift</span><span>{offsetX.toFixed(2)}</span></div><input type="range" min={-1} max={1} step={0.01} value={offsetX} onChange={(e) => setOffsetX(Number(e.target.value))} /></div>
@@ -2508,7 +2597,6 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
               </div>
             )}
 
-            {!isCard && (
               <>
                 <div className="ps-panel">
                   <h3>Photo Border</h3>
@@ -2534,7 +2622,6 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
                   </div>
                 </div>
               </>
-            )}
           </div>
         </div>
       )}
