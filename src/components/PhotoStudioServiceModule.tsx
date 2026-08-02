@@ -1909,12 +1909,27 @@ export default function PhotoStudioServiceModule({ moduleKey }: PhotoStudioProps
 
       doc.open()
       doc.write(`
+        <!DOCTYPE html>
         <html>
         <head>
           <title>Photo Card Print</title>
           <style>
-            body { margin: 0; }
-            img { width: 100%; display: block; }
+            @page { margin: 0; }
+            body { 
+              margin: 0; 
+              padding: 0; 
+              display: flex; 
+              justify-content: center; 
+              align-items: center; 
+              min-height: 100vh; 
+              background: #fff;
+            }
+            img { 
+              max-width: 100%; 
+              max-height: 100vh; 
+              object-fit: contain; 
+              page-break-inside: avoid;
+            }
           </style>
         </head>
         <body>
