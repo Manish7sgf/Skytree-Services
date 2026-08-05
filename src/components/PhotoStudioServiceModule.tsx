@@ -60,7 +60,7 @@ const DPI = 300
 
 const PHOTO_SIZES_CM: Record<'passport' | 'stamp' | 'custom', { label: string; widthCm: number; heightCm: number }> = {
   passport: { label: 'Passport 3.5 x 4.5 cm', widthCm: 3.5, heightCm: 4.5 },
-  stamp: { label: 'Stamp 2.5 x 3.0 cm', widthCm: 2.5, heightCm: 3.0 },
+  stamp: { label: 'Stamp 2.0 x 2.5 cm', widthCm: 2.0, heightCm: 2.5 },
   custom: { label: 'Custom', widthCm: 3.5, heightCm: 4.5 },
 }
 
